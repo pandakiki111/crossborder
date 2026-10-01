@@ -1,0 +1,29 @@
+services:
+  mariadb:
+    image: mariadb:11.4
+    container_name: crossborder-mariadb
+    ports:
+      - "3306:3306"
+    environment:
+      MARIADB_ROOT_PASSWORD: rootpass
+      MARIADB_DATABASE: crossborder
+      MARIADB_USER: app
+      MARIADB_PASSWORD: apppass
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7.4
+    container_name: crossborder-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  mariadb-data:
+  redis-data:

@@ -4,6 +4,11 @@ plugins {
     id 'io.spring.dependency-management' version '1.1.7' apply false
 }
 
+ext {
+    // OpenFeign fork 6.x = Hibernate 6.6 (Spring Boot 3.5) 대응 라인. 7.x는 Hibernate 7 / Boot 4용
+    querydslVersion = '6.12'
+}
+
 allprojects {
     group = 'com.crossborder'
     version = '0.0.1-SNAPSHOT'

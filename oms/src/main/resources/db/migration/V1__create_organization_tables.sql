@@ -22,6 +22,7 @@ CREATE TABLE companies
     status      VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE / INACTIVE',
     created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted_at  DATETIME     NULL COMMENT '폐업/계약종료 처리 시각 (값이 있으면 status는 INACTIVE)',
     CONSTRAINT uk_companies_business_no UNIQUE (business_no)
 ) COMMENT '입점 회사';
 
@@ -33,6 +34,7 @@ CREATE TABLE brands
     status     VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE / INACTIVE',
     created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    deleted_at DATETIME     NULL COMMENT '계약종료 처리 시각 (값이 있으면 status는 INACTIVE)',
     CONSTRAINT fk_brands_company FOREIGN KEY (company_id) REFERENCES companies (id),
     CONSTRAINT uk_brands_company_name UNIQUE (company_id, name)
 ) COMMENT '입점사 브랜드 (브랜드명 유니크는 회사 단위)';

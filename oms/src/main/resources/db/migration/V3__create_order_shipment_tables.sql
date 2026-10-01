@@ -10,9 +10,12 @@
 -- 핵심 규칙 (서비스 레이어 보장):
 --  - 분리/출고지시 대상은 status=ORDERED 항목만
 --  - 한 shipment는 단일 브랜드 항목만 포함
---  - INSTRUCTED 이후 회차에 물린 항목은 취소 불가
---  - 취소 시 CREATED 회차에서 항목 제거, 빈 회차는 CANCELED 처리
 --  - 주문 SHIPPING 전이는 첫 회차 INSTRUCTED 시점
+--  - 취소 가능 여부는 항목 단위: INSTRUCTED 이후 회차에 물린 항목은 취소 불가
+--    (SHIPPING 주문이어도 CREATED 회차 항목은 취소 가능)
+--  - 주문 전체 취소는 모든 회차가 CREATED/CANCELED일 때만 (= PAID / PARTIAL_CANCELED)
+--  - 사은품(GIFT_PRODUCT) 항목은 수량 부분취소 없이 전체 취소만
+--  - 취소 시 CREATED 회차에서 항목 제거, 빈 회차는 CANCELED 처리
 -- =====================================================
 
 CREATE TABLE orders

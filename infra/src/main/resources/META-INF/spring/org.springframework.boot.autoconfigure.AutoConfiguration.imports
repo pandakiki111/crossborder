@@ -1,2 +1,3 @@
+com.crossborder.infra.jpa.EntityScanConfig
 com.crossborder.infra.jpa.JpaAuditingConfig
 com.crossborder.infra.jpa.QuerydslConfig

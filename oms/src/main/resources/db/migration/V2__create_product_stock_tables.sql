@@ -1,3 +1,30 @@
+-- =====================================================
+-- V2: 상품/재고 도메인
+--
+-- sales_channels                판매채널 마스터 (RAKUTEN / QOO10 / AMAZON_JP ...)
+-- customs_categories            통관 품목 분류 (수량 한도는 상품 개별이 아니라
+--                               분류 단위 합산으로 판정 — 브랜드가 달라도 같은
+--                               분류면 합산. 예: 시트마스크 50매)
+-- products                      제품 = 재고 관리 단위 (SKU). 물리/할당 재고 보유,
+--                               판매가능재고 = physical - allocated (계산값)
+--                               통관 정보(HS Code, 분류, 원산지)와 물리 정보(무게·치수) 포함
+-- sale_products                 판매상품 = 판매 단위 (마켓 노출 단위)
+--                               단품도 구성 1행짜리 판매상품으로 등록 (판매 경로 단일화)
+-- sale_product_items            판매상품 구성 (제품 N:M + 수량, 구성 고정 사은품 포함)
+-- sale_product_channel_mappings 채널별 상품/옵션 코드 매핑
+--                               (channel, code, option_code) → 판매상품 1개 확정이
+--                               주문 수집의 관문. 옵션코드는 채널 종속값이라 여기에만 존재
+-- stock_movements               물리 재고 원장 (append-only, 모든 증감의 근거 기록)
+-- channel_inventory_sync        채널별 재고 전송 상태 (채널×제품당 1행 유지,
+--                               실패 감지와 재시도의 입력값)
+--
+-- 핵심 규칙 (서비스 레이어 보장):
+--  - 모든 판매는 sale_products를 통한다 (products 직접 판매 없음)
+--  - physical_stock의 모든 증감은 stock_movements에 선기록 (원장이 진실의 원천)
+--  - allocated_stock은 주문 상태에서 유도 (원장 대상 아님, 정합성은 배치 대조)
+--  - 재고 변동 시 관련 채널에 판매가능재고 재전송 (sync 테이블이 상태 추적)
+-- =====================================================
+
 CREATE TABLE sales_channels
 (
     id         BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -9,6 +36,17 @@ CREATE TABLE sales_channels
     CONSTRAINT uk_sales_channels_code UNIQUE (code)
 ) COMMENT '판매채널 마스터';
 
+CREATE TABLE customs_categories
+(
+    id         BIGINT AUTO_INCREMENT PRIMARY KEY,
+    code       VARCHAR(30)  NOT NULL COMMENT '분류 코드 (SHEET_MASK / COSMETIC_LIQUID ...)',
+    name       VARCHAR(100) NOT NULL COMMENT '분류명 (예: 시트마스크)',
+    qty_limit  INT          NULL COMMENT '1회 통관 수량 한도 (예: 시트마스크 50). NULL이면 수량 한도 없음',
+    created_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT uk_customs_categories_code UNIQUE (code)
+) COMMENT '통관 품목 분류 (수량 한도는 이 분류 단위로 합산 판정)';
+
 CREATE TABLE products
 (
     id              BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -16,7 +54,7 @@ CREATE TABLE products
     sku             VARCHAR(50)   NOT NULL COMMENT '내부 재고 관리 코드 (SKU)',
     name            VARCHAR(300)  NOT NULL COMMENT '제품명 - 관리자 확인',
     name_eng        VARCHAR(300)  NOT NULL COMMENT '영문제품명 - 실제 출고시 사용',
-    status          VARCHAR(20)   NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE / INACTIVE',
+    customs_category_id BIGINT    NULL COMMENT '통관 품목 분류 (NULL이면 수량 한도 대상 아님)',
     hs_code         VARCHAR(20)   NULL COMMENT 'HS Code (일본 수입통관 기준, 다국가 반영 시 별도 테이블 분리)',
     unit_price      DECIMAL(12,2) NULL COMMENT '기준단가 (OMS 내 비율계산용)',
     currency        CHAR(3)       NULL COMMENT 'ISO 통화 코드 (현재 JPY 기준)',
@@ -28,6 +66,7 @@ CREATE TABLE products
     length_cm       DECIMAL(10,2) NULL COMMENT '세로(cm)',
     height_cm       DECIMAL(10,2) NULL COMMENT '높이(cm)',
     origin          VARCHAR(50)   NULL COMMENT '원산지',
+    status          VARCHAR(20)   NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE / INACTIVE',
     created_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_user_id BIGINT        NOT NULL COMMENT '최초 등록자',
     updated_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -36,7 +75,8 @@ CREATE TABLE products
     CONSTRAINT uk_products_barcode UNIQUE (barcode),
     CONSTRAINT fk_products_brand FOREIGN KEY (brand_id) REFERENCES brands (id),
     CONSTRAINT fk_products_created_user FOREIGN KEY (created_user_id) REFERENCES users (id),
-    CONSTRAINT fk_products_updated_user FOREIGN KEY (updated_user_id) REFERENCES users (id)
+    CONSTRAINT fk_products_updated_user FOREIGN KEY (updated_user_id) REFERENCES users (id),
+    CONSTRAINT fk_products_customs_category FOREIGN KEY (customs_category_id) REFERENCES customs_categories (id)
     -- FULLTEXT (name): 검색 기능 구현 시 ngram 파서와 함께 별도 마이그레이션으로 추가
 ) COMMENT '제품 (재고 관리 단위, SKU)';
 

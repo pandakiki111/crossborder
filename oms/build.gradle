@@ -7,3 +7,8 @@ dependencies {
     implementation project(':infra')
     implementation 'org.springframework.boot:spring-boot-starter-web'
 }
+
+// ./gradlew :oms:bootRun은 로컬 실행이므로 local 프로필(테스트 데이터 시딩) 적용
+bootRun {
+    systemProperty 'spring.profiles.active', 'local'
+}

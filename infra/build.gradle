@@ -12,4 +12,9 @@ dependencies {
     runtimeOnly 'org.mariadb.jdbc:mariadb-java-client'
     implementation 'org.redisson:redisson-spring-boot-starter:3.45.1'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
+
+    // JWT 서명/검증 유틸 (auth 발급, oms/cbt 검증이 공유)
+    implementation "io.jsonwebtoken:jjwt-api:${jjwtVersion}"
+    runtimeOnly "io.jsonwebtoken:jjwt-impl:${jjwtVersion}"
+    runtimeOnly "io.jsonwebtoken:jjwt-jackson:${jjwtVersion}"
 }

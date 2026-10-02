@@ -7,6 +7,7 @@ dependencies {
     implementation project(':infra')
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
 }
 
 // ./gradlew :auth:bootRun은 로컬 실행이므로 local 프로필 적용

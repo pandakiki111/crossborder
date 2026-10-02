@@ -1,6 +1,24 @@
 spring:
   application:
     name: cbt
+  datasource:
+    url: jdbc:mariadb://localhost:3306/crossborder
+    username: app
+    # 실값은 환경변수로 주입 (로컬은 application-local.yml)
+    password: ${DB_PASSWORD}
+    driver-class-name: org.mariadb.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+  flyway:
+    # 스키마 마이그레이션은 oms가 소유한다 (V1~ 스크립트가 oms에만 있으므로 여기서 돌리면 검증 실패)
+    enabled: false
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
 server:
   port: 8083
 

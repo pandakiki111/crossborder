@@ -1,3 +1,8 @@
+spring:
+  datasource:
+    # docker-compose.yml의 로컬 DB 계정
+    password: apppass
+
 crossborder:
   jwt:
     # 로컬 전용 키 (공개되어도 무방). auth·oms·cbt가 같은 값을 써야 서로의 토큰을 검증할 수 있다

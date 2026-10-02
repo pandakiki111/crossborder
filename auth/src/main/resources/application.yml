@@ -3,3 +3,8 @@ spring:
     name: auth
 server:
   port: 8081
+
+crossborder:
+  jwt:
+    # 기본값 없음: 운영에서 JWT_SECRET이 없으면 기동 실패 (로컬은 application-local.yml)
+    secret: ${JWT_SECRET}

@@ -8,3 +8,8 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-security'
 }
+
+// ./gradlew :auth:bootRun은 로컬 실행이므로 local 프로필 적용
+bootRun {
+    systemProperty 'spring.profiles.active', 'local'
+}

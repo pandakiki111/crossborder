@@ -15,6 +15,13 @@ import lombok.NoArgsConstructor;
 
 /**
  * 출고 회차 (분리·지시·물류 작업의 단위, 한 회차 = 단일 브랜드)
+ * <p>
+ * 상태 전이 소유권 (oms·cbt 분리):
+ * <ul>
+ *   <li>oms: 생성(CREATED) · {@link #instruct} · {@link #cancel} — 분리와 출고지시까지</li>
+ *   <li>cbt 콜백 처리 전용: {@link #pick} · {@link #pack} · {@link #palletize} · {@link #masterShip}.
+ *       물류 작업 결과는 cbt → oms 콜백으로만 들어오며, oms 서비스가 PICKED 이후 전이를 직접 호출하는 코드는 만들지 않는다</li>
+ * </ul>
  */
 @Getter
 @Entity
@@ -91,18 +98,22 @@ public class Shipment extends BaseAuditEntity {
         this.instructedAt = instructedAt;
     }
 
+    /** cbt 콜백 처리에서만 호출 (클래스 javadoc 참고) */
     public void pick() {
         transit(ShipmentStatus.INSTRUCTED, ShipmentStatus.PICKED);
     }
 
+    /** cbt 콜백 처리에서만 호출 */
     public void pack() {
         transit(ShipmentStatus.PICKED, ShipmentStatus.PACKED);
     }
 
+    /** cbt 콜백 처리에서만 호출 */
     public void palletize() {
         transit(ShipmentStatus.PACKED, ShipmentStatus.PALLETIZED);
     }
 
+    /** cbt 콜백 처리에서만 호출 */
     public void masterShip() {
         transit(ShipmentStatus.PALLETIZED, ShipmentStatus.MASTER_SHIPPED);
     }

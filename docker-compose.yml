@@ -11,6 +11,8 @@ services:
       MARIADB_PASSWORD: apppass
     volumes:
       - mariadb-data:/var/lib/mysql
+      # cbt 스키마(crossborder_cbt)·계정(cbt). 최초 기동(빈 볼륨)에만 실행된다
+      - ./docker/mariadb/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 5s

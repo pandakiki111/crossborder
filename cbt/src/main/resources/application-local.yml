@@ -1,7 +1,7 @@
 spring:
   datasource:
-    # docker-compose.yml의 로컬 DB 계정
-    password: apppass
+    # docker/mariadb/init/01-cbt-schema.sql의 로컬 cbt 계정
+    password: cbtpass
 
 crossborder:
   jwt:

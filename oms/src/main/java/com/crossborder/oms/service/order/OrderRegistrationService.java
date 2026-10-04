@@ -5,11 +5,13 @@ import com.crossborder.common.entity.order.OrderItem;
 import com.crossborder.common.entity.organization.Brand;
 import com.crossborder.common.entity.product.Product;
 import com.crossborder.common.entity.product.SaleProduct;
+import com.crossborder.common.entity.product.SaleProductItem;
 import com.crossborder.infra.jpa.AuditorContext;
 import com.crossborder.oms.repository.BrandRepository;
 import com.crossborder.oms.repository.OrderRepository;
 import com.crossborder.oms.repository.ProductRepository;
 import com.crossborder.oms.repository.SaleProductRepository;
+import com.crossborder.oms.service.stock.StockAllocator;
 import com.crossborder.oms.service.support.InClause;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -27,8 +29,9 @@ import org.springframework.stereotype.Service;
 /**
  * 주문 등록 본체. 엑셀 시딩·마켓 수집(대량)과 단건 등록이 모두 이 경로를 쓴다.
  * <p>
- * 흐름: 사전 일괄 조회(중복·브랜드·판매상품·사은품 제품) → 엔티티 팩토리로 주문 조립(도메인 규칙 검증)
- * → OrderBatchWriter가 묶음 단위 JDBC batch로 저장. 조회·저장 모두 주문 수와 무관하게 왕복 횟수가 거의 일정하다.
+ * 흐름: 사전 일괄 조회(중복·브랜드·판매상품·사은품 제품·판매상품 구성) → 엔티티 팩토리로 주문 조립(도메인 규칙 검증)
+ * + 재고 전개 → OrderBatchWriter가 묶음 단위 JDBC batch로 저장하며 같은 트랜잭션에서 재고를 할당한다.
+ * 조회·저장 모두 주문 수와 무관하게 왕복 횟수가 거의 일정하다. 매핑안됨 주문은 할당하지 않는다 (매핑 완료 시 할당).
  * <p>
  * 이 클래스는 트랜잭션을 걸지 않는다. 커밋 단위는 OrderBatchWriter의 묶음이다.
  * 마켓 수집처럼 입력을 먼저 쌓아 두는 경로(예: Redis 원장)도 쌓인 커맨드를 registerAll로 넘기면 된다.
@@ -42,11 +45,12 @@ public class OrderRegistrationService {
     private final BrandRepository brandRepository;
     private final OrderNoGenerator orderNoGenerator;
     private final OrderBatchWriter orderBatchWriter;
+    private final StockAllocator stockAllocator;
     private final Long systemUserId;
 
     public OrderRegistrationService(OrderRepository orderRepository, SaleProductRepository saleProductRepository,
                                     ProductRepository productRepository, BrandRepository brandRepository, OrderNoGenerator orderNoGenerator,
-                                    OrderBatchWriter orderBatchWriter,
+                                    OrderBatchWriter orderBatchWriter, StockAllocator stockAllocator,
                                     @Value("${crossborder.audit.system-user-id:1}") Long systemUserId) {
         this.orderRepository = orderRepository;
         this.saleProductRepository = saleProductRepository;
@@ -54,6 +58,7 @@ public class OrderRegistrationService {
         this.brandRepository = brandRepository;
         this.orderNoGenerator = orderNoGenerator;
         this.orderBatchWriter = orderBatchWriter;
+        this.stockAllocator = stockAllocator;
         this.systemUserId = systemUserId;
     }
 
@@ -91,6 +96,7 @@ public class OrderRegistrationService {
                 allItems(commands).map(OrderRegistrationCommand.Item::saleProductId));
         Map<Long, Product> giftProducts = loadAll(productRepository::findAllById, Product::getId,
                 allItems(commands).map(OrderRegistrationCommand.Item::giftProductId));
+        Map<Long, List<SaleProductItem>> compositions = stockAllocator.loadCompositions(saleProducts.keySet());
 
         OrderRegistrationResult[] results = new OrderRegistrationResult[commands.size()];
         List<OrderDraft> drafts = new ArrayList<>();
@@ -105,7 +111,7 @@ public class OrderRegistrationService {
                 continue;
             }
             try {
-                drafts.add(toDraft(command, brands, saleProducts, giftProducts));
+                drafts.add(toDraft(command, brands, saleProducts, giftProducts, compositions));
                 draftIndexes.add(i);
             } catch (OrderRegistrationException | IllegalArgumentException e) {
                 // IllegalArgumentException: 엔티티 팩토리의 도메인 규칙 위반 (수량, 브랜드 불일치 등)
@@ -121,7 +127,8 @@ public class OrderRegistrationService {
     }
 
     private OrderDraft toDraft(OrderRegistrationCommand command, Map<Long, Brand> brands,
-                               Map<Long, SaleProduct> saleProducts, Map<Long, Product> giftProducts) {
+                               Map<Long, SaleProduct> saleProducts, Map<Long, Product> giftProducts,
+                               Map<Long, List<SaleProductItem>> compositions) {
         Brand brand = brands.get(command.brandId());
         if (brand == null) {
             throw new OrderRegistrationException("브랜드가 없습니다. brandId=" + command.brandId());
@@ -169,7 +176,8 @@ public class OrderRegistrationService {
             items.add(OrderItem.ofChannelProduct(null, brand.getId(), item.channelProductCode(),
                     item.channelOptionCode(), saleProduct, item.quantity(), item.unitPrice()));
         }
-        return new OrderDraft(order, items);
+        Map<Long, Integer> allocation = order.isMappingPending() ? null : StockAllocator.expand(items, compositions);
+        return new OrderDraft(order, items, allocation);
     }
 
     private static java.util.stream.Stream<OrderRegistrationCommand.Item> allItems(

@@ -1,5 +1,6 @@
 package com.crossborder.oms.exception;
 
+import com.crossborder.infra.lock.LockAcquisitionException;
 import com.crossborder.oms.dto.ErrorResponse;
 import com.crossborder.oms.service.order.seed.InvalidSeedFileException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -27,6 +28,15 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ErrorResponse> handleDataIntegrity(DataIntegrityViolationException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ErrorResponse("다른 요청과 충돌했습니다. 최신 상태를 확인 후 다시 시도하세요"));
+    }
+
+    /**
+     * 재고 락 타임아웃 (같은 상품을 처리 중인 다른 요청). 잠시 후 다시 시도하면 되는 충돌이라 409.
+     */
+    @ExceptionHandler(LockAcquisitionException.class)
+    public ResponseEntity<ErrorResponse> handleLockAcquisition(LockAcquisitionException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ErrorResponse("같은 상품의 재고를 처리 중인 다른 요청이 있습니다. 잠시 후 다시 시도하세요"));
     }
 
     @ExceptionHandler(ForbiddenException.class)

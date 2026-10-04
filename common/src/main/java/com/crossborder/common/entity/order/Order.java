@@ -46,6 +46,10 @@ public class Order extends BaseAuditEntity {
     @Column(name = "mapping_pending", nullable = false)
     private boolean mappingPending;
 
+    /** 재고 할당 완료 시각 (null이면 미할당). 할당 멱등성과 등록-할당 정합 검증의 기준 */
+    @Column(name = "allocated_at")
+    private LocalDateTime allocatedAt;
+
     @Column(name = "total_item_amount", precision = 12, scale = 2)
     private BigDecimal totalItemAmount;
 
@@ -140,6 +144,24 @@ public class Order extends BaseAuditEntity {
             throw new IllegalStateException("매핑안됨 주문이 아닙니다. orderNo=" + orderNo);
         }
         this.mappingPending = false;
+    }
+
+    /**
+     * 재고 할당 완료 기록. allocated_stock 반영과 같은 트랜잭션에서 호출한다 (서비스 책임).
+     * 매핑안됨 주문은 전개할 수 없어 할당 대상이 아니다.
+     */
+    public void markAllocated(LocalDateTime at) {
+        if (allocatedAt != null) {
+            throw new IllegalStateException("이미 할당된 주문입니다. orderNo=" + orderNo + ", allocatedAt=" + allocatedAt);
+        }
+        if (mappingPending) {
+            throw new IllegalStateException("매핑안됨 주문은 할당할 수 없습니다. orderNo=" + orderNo);
+        }
+        this.allocatedAt = at;
+    }
+
+    public boolean isAllocated() {
+        return allocatedAt != null;
     }
 
     /**

@@ -32,6 +32,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         // /error: 오류 디스패치에는 JWT 필터가 다시 돌지 않으므로, 허용하지 않으면 403·404까지 401로 덮인다
                         .requestMatchers("/actuator/health", "/error").permitAll()
+                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
                         // WORKER는 cbt 전용 사용자 → oms 전 API 차단 (403). 소속 스코프는 서비스의 ScopePolicy가 검사
                         .anyRequest().hasAnyRole("ADMIN", "COMPANY_STAFF", "BRAND_STAFF"))
                 // httpBasic/formLogin을 끄면 기본 진입점이 403이 되므로 미인증은 401로 명시

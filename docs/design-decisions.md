@@ -18,6 +18,12 @@
   광역("com.crossborder") 선언 금지. 공통 조회가 실제로 겹칠 때만 infra 승격.
 - 라이브러리 노출 정책: infra에서 JPA·Redis 스타터는 api, Redisson은 implementation
   (실행 모듈이 RedissonClient를 직접 만지지 못하게 — 락은 infra 래핑으로만).
+  분산 락은 infra `DistributedLockManager`로만 노출한다: 키를 정렬·중복 제거해 멀티락으로 한 번에 획득(데드락 방지),
+  대기·임대 시간은 crossborder.lock.wait-time / lease-time (기본 3s / 30s), 실패는 LockAcquisitionException.
+  lease 30s 근거 (2026-10-04 실측, 로컬): 시딩 묶음(500주문 INSERT+할당) 평균 약 35ms, 소급 묶음 약 17ms,
+  매핑 완료 트랜잭션(매핑 1건이 주문 405건 확정·할당) API 전체 0.52s → 최악 관측치의 약 60배 여유.
+  lease를 명시하면 Redisson watchdog 자동 연장이 꺼지므로 작업이 lease보다 길면 락이 먼저 풀린다(해제 시 경고 로그).
+  반대로 보유 프로세스가 죽으면 해당 제품은 최대 lease만큼 막힌다 — 그래서 수 분 단위가 아니라 30s로 둔다.
   jjwt도 동일: infra 캡슐화, 자체 타입(TokenPayload 등)만 노출.
 - oms와 cbt는 독립 시스템이다. 별도 DB를 사용하며(로컬은 같은 MariaDB 인스턴스의
   별도 스키마: crossborder / crossborder_cbt), 서로의 테이블을 직접 읽거나 쓰지 않는다.
@@ -106,6 +112,27 @@
   판매가능 = physical - allocated (계산값).
   physical의 모든 증감은 stock_movements(원장, 부호 포함 수량)에 기록.
   allocated는 주문 상태에서 유도, 원장 비대상.
+- 재고 할당 (allocated_stock):
+  - 전개: SALE_PRODUCT 항목 = 판매상품 구성 × 주문수량 (구성 고정 사은품 is_gift 포함), GIFT_PRODUCT = 제품 직접.
+    유효(ORDERED) 항목만. 판매가능 음수 허용 — 한도 검사 없이 증가 (physical은 음수 금지 유지).
+  - 증감은 원자적 UPDATE(allocated_stock ± ?)로, 제품 락(stock:product:{productId}) 아래 트랜잭션 안에서 한다.
+    락은 커밋 후 해제 (executeWithLocks로 트랜잭션을 감싸거나, 열린 트랜잭션이면 lockUntilTransactionEnd).
+  - orders.allocated_at = 할당 완료 시각 (V6). 할당은 allocated_at IS NULL인 주문에만 하고 같은 트랜잭션에서 기록 → 멱등.
+  - 묶음 실행 규칙은 ChunkedAllocationExecutor 하나로 등록(시딩)과 소급이 공유한다: 500주문 묶음 → 제품 합산 정렬 멀티락 1회
+    → 새 트랜잭션 → 커밋 후 해제, 묶음이 락 타임아웃·DB 오류로 실패하면 주문 단위로 재시도해 원인 주문만 실패.
+  - 등록 경로(시딩): 묶음 트랜잭션에 INSERT와 할당을 함께 넣는다. 실패 주문은 INSERT까지 롤백되고 결과 파일에 사유.
+    등록됐는데 미할당인 주문은 남지 않는다. (주문마다 락·커밋하면 대량 시딩 왕복이 주문 수만큼 늘어나 묶음 단위로 결정)
+  - 매핑안됨 주문은 전개할 수 없어 등록 시 할당하지 않는다. 항목 매핑이 확정될 때마다(OrderMappingService) 그 주문의
+    유효 항목이 모두 확정됐는지 보고, 모두 확정이면 즉시 주문 전체를 할당하고 allocated_at을 기록한다 (매핑 확정 = 할당 트리거).
+  - allocated_at은 항상 "주문 전체 할당 완료 시각"이다 (항목 일부만 할당된 주문 상태는 없다).
+  - 소급·정합 검증은 관리자 수동 API (ADMIN, /api/admin/allocations, 동기 실행). 소급은 정상 흐름에서 빠진 예외 상황과
+    allocated_at 도입 이전 데이터 정리용이다.
+    backfill: 대상 = allocated_at IS NULL AND status != 'CANCELED' (취소 주문은 할당할 것이 없어 제외),
+    응답 {processed, allocated, skipped, failed, anomalies, anomalyOrderIds}. 매핑안됨 주문은 skipped.
+    DELIVERED 주문은 조회되지만 재고 정합 때문에 할당하지 않고 이상 데이터(anomalies)로 집계해 운영자가 확인한다
+    (매핑 완료 시 자동 할당). 주문 행을 잠근 뒤 allocated_at IS NULL을 재확인하므로 멱등.
+    consistency: 할당 완료 주문의 유효 항목 전개 합 = allocated_stock 비교 + 미할당·매핑안됨 주문 수.
+    정합 기대값은 출고 차감이 없는 현재 기준 — 출고 Phase에서 출고분을 빼도록 바꾼다. 주기 실행은 하지 않는다.
 - 통관: customs_categories 분류 단위로 수량 한도 합산 판정 (시트마스크 120매).
   products.customs_unit_qty = 재고 1단위당 통관 계수 (10매입 박스=10).
   판정 수량 = Σ(주문수량 × customs_unit_qty), 분류별 그룹핑.
@@ -174,7 +201,6 @@
 ## 8. 미결 / 확장 메모 (임의 구현 금지)
 
 - 기기 신뢰 인증·TOTP (2차, docs/device-registration.md)
-- 재고 할당 로직 (+시딩 주문 소급 적용) — 취소 구현 직전에
 - 이벤트 사은품 자동 부착 규칙 / 주문 수동 사은품 매핑
 - 수집 API (매핑안됨 보관 구조는 §5로 확정, 시딩과 공유)
 - 채널 재고 밀어내기 (ChannelInventorySync 경합 처리 포함)

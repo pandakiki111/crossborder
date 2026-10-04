@@ -12,6 +12,9 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, Long> {
 
     boolean existsByOrderIdAndBrandId(Long orderId, Long brandId);
 
+    /** 주문들의 전체 항목 (재고 전개용). orderIds는 IN 절 크기 단위로 나눠서 넘긴다 */
+    List<OrderItem> findByOrderIdIn(Collection<Long> orderIds);
+
 
     /**
      * 채널·브랜드·채널 코드가 일치하는 매핑안됨 항목. 채널 수신 사은품도 channel_product_code가 있으므로 item_type으로 거른다.

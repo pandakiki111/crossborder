@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.crossborder.common.entity.organization.UserRole;
 import com.crossborder.infra.jpa.EntityScanConfig;
+import com.crossborder.infra.lock.DistributedLockManager;
 import com.crossborder.infra.jpa.JpaAuditingConfig;
 import com.crossborder.infra.jpa.QuerydslConfig;
 import com.crossborder.oms.dto.product.ChannelMappingRequest;
@@ -14,6 +15,8 @@ import com.crossborder.oms.security.scope.ScopePolicy;
 import com.crossborder.oms.service.order.OrderMappingService;
 import com.crossborder.oms.service.product.ChannelProductResolver.MappingHistory;
 import com.crossborder.oms.service.product.ChannelProductResolver.MappingKey;
+import com.crossborder.oms.service.stock.StockAllocator;
+import com.crossborder.oms.support.InMemoryLockManager;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -54,7 +57,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @ImportAutoConfiguration({EntityScanConfig.class, JpaAuditingConfig.class, QuerydslConfig.class})
 @Import({ChannelMappingService.class, OrderMappingService.class, ChannelProductResolver.class, ScopePolicy.class,
-        ChannelMappingHistoryTest.ClockTestConfig.class})
+        StockAllocator.class, ChannelMappingHistoryTest.ClockTestConfig.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 @Testcontainers
 class ChannelMappingHistoryTest {
@@ -76,6 +79,11 @@ class ChannelMappingHistoryTest {
         @Bean
         MutableClock clock() {
             return new MutableClock();
+        }
+
+        @Bean
+        DistributedLockManager lockManager() {
+            return new InMemoryLockManager();
         }
     }
 

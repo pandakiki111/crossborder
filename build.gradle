@@ -8,6 +8,7 @@ ext {
     // OpenFeign fork 6.x = Hibernate 6.6 (Spring Boot 3.5) 대응 라인. 7.x는 Hibernate 7 / Boot 4용
     querydslVersion = '6.12'
     jjwtVersion = '0.13.0'
+    poiVersion = '5.4.1'
 }
 
 allprojects {

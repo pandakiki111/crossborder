@@ -7,8 +7,12 @@ dependencies {
     implementation project(':infra')
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     implementation 'org.springframework.boot:spring-boot-starter-aop'
+
+    // 주문 엑셀 시딩 (양식 다운로드·업로드 결과 파일)
+    implementation "org.apache.poi:poi-ooxml:${poiVersion}"
 }
 
 // ./gradlew :oms:bootRun은 로컬 실행이므로 local 프로필(테스트 데이터 시딩) 적용

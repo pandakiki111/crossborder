@@ -7,6 +7,11 @@ spring:
     # 실값은 환경변수로 주입 (로컬은 application-local.yml)
     password: ${DB_PASSWORD}
     driver-class-name: org.mariadb.jdbc.Driver
+  servlet:
+    multipart:
+      # 주문 엑셀 시딩 업로드
+      max-file-size: 10MB
+      max-request-size: 10MB
   jpa:
     hibernate:
       ddl-auto: validate

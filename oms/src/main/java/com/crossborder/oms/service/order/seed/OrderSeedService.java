@@ -23,7 +23,6 @@ import com.crossborder.oms.service.support.InClause;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -35,14 +34,22 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.util.StopWatch;
 
 /**
- * 주문 엑셀 시딩 (수동 수집). 스트리밍 파싱 → 사전 일괄 조회 → 행 검증 → 주문 그룹핑 → 주문 검증
- * → 대량 등록(OrderRegistrationService.registerAll) → 결과 파일.
+ * 주문 엑셀 시딩 (수동 수집). 메모리에 남는 행 데이터를 청크 1개분으로 제한하는 3-패스 파이프라인이다.
+ * <ol>
+ *   <li>1차 패스(인덱스): 주문키 → 행 번호만 모은다 (행 데이터 비보관). 떨어진 같은 주문 행·파일 내 중복 주문은 여기서 병합된다</li>
+ *   <li>2차 패스(청크 처리): 행을 흘리며 주문이 완성되는 대로 모아 chunkOrders(기본 1,000)주문마다
+ *       청크분 일괄 조회 → 행·주문 검증 → 등록+할당(ChunkedAllocationExecutor) → 결과를 압축 보관하고 청크 데이터를 버린다.
+ *       청크 처리 순서는 주문 완성 순서라 원본 행 순서와 다를 수 있다</li>
+ *   <li>3차 패스(결과 파일): 원본을 다시 흘리며 원본 행 순서대로 처리결과 열을 쓴다 (SXSSF)</li>
+ * </ol>
+ * 무거운 캐시(매핑 이력·사은품 SKU)는 청크 수명이다. 같은 상품코드가 여러 청크에 나오면 다시 조회한다 (IN 일괄이라 범청크 캐시 불요).
+ * 기존 주문번호 중복 체크도 청크별 IN 일괄 (registerAll). 청크는 순차 처리한다 (락 경합·순서 복잡도 회피).
  * <p>
- * DB 조회는 행마다 하지 않는다. 사전 조회가 두 갈래이고 둘 다 Map으로 캐시한다.
+ * DB 조회는 행마다 하지 않는다. 청크마다 사전 조회가 두 갈래이고 둘 다 Map으로 캐시한다.
  * <ul>
  *   <li>일반 행: (채널, 상품코드, 옵션코드) → 매핑 이력 IN 조회 (지정 브랜드 안에서만).
  *       매칭은 행의 주문일시가 속한 기간의 매핑 — 재업로드·늦은 업로드도 주문 당시 판매상품(구성)에 붙는다</li>
@@ -77,15 +84,22 @@ public class OrderSeedService {
     private final ProductRepository productRepository;
     private final ChannelProductResolver channelProductResolver;
     private final OrderRegistrationService orderRegistrationService;
+    /** 청크당 주문 수 (테스트에서 경계 검증을 위해 바꿀 수 있도록 final이 아님) */
+    private int chunkOrders;
 
     public OrderSeedService(SalesChannelRepository salesChannelRepository, BrandRepository brandRepository,
                             ProductRepository productRepository, ChannelProductResolver channelProductResolver,
-                            OrderRegistrationService orderRegistrationService) {
+                            OrderRegistrationService orderRegistrationService,
+                            @Value("${crossborder.seed.chunk-orders:1000}") int chunkOrders) {
         this.salesChannelRepository = salesChannelRepository;
         this.brandRepository = brandRepository;
         this.productRepository = productRepository;
         this.channelProductResolver = channelProductResolver;
         this.orderRegistrationService = orderRegistrationService;
+        if (chunkOrders < 1) {
+            throw new IllegalArgumentException("crossborder.seed.chunk-orders는 1 이상이어야 합니다. value=" + chunkOrders);
+        }
+        this.chunkOrders = chunkOrders;
     }
 
     public byte[] template() {
@@ -104,82 +118,198 @@ public class OrderSeedService {
     @ScopeCheck(ScopeTarget.BRAND)
     public OrderSeedResult seed(InputStream in, @ScopeId Long brandId) {
         Brand brand = validateTarget(brandId);
-        // 단계별 소요 시간 (README 성능 수치의 출처 — 완료 로그에 함께 남긴다)
-        StopWatch watch = new StopWatch();
-        watch.start("parse");
-        OrderSeedSheet sheet = OrderSeedSheet.read(in);
-        List<OrderSeedRow> rows = sheet.readRows();
-        watch.stop();
-        if (rows.isEmpty()) {
-            throw new InvalidSeedFileException("데이터 행이 없습니다.");
+        try (SeedUpload upload = SeedUpload.save(in)) {
+            return process(upload, brand.getId());
         }
-
-        watch.start("validateRows");
-        new RowValidator(loadChannels(), brand.getId()).validate(rows);
-        watch.stop();
-        watch.start("validateOrders");
-        List<List<OrderSeedRow>> orders = groupByOrder(rows);
-
-        List<List<OrderSeedRow>> valid = new ArrayList<>();
-        int failed = 0;
-        for (List<OrderSeedRow> orderRows : orders) {
-            validateCommonInfo(orderRows);
-            if (orderRows.stream().anyMatch(OrderSeedRow::hasErrors)) {
-                markFailed(orderRows, sheet);
-                failed++;
-            } else {
-                valid.add(orderRows);
-            }
-        }
-
-        watch.stop();
-
-        watch.start("register");
-        List<OrderRegistrationResult> results = orderRegistrationService.registerAll(
-                valid.stream().map(orderRows -> toCommand(orderRows, brand.getId())).toList());
-        watch.stop();
-
-        watch.start("writeResult");
-
-        int success = 0;
-        int unmapped = 0;
-        int skipped = 0;
-        for (int i = 0; i < valid.size(); i++) {
-            List<OrderSeedRow> orderRows = valid.get(i);
-            OrderRegistrationResult result = results.get(i);
-            switch (result.status()) {
-                case REGISTERED -> {
-                    if (result.mappingPending()) {
-                        markUnmapped(orderRows, sheet, result.orderNo());
-                        unmapped++;
-                    } else {
-                        markAll(orderRows, sheet, ResultKind.SUCCESS, "성공: " + result.orderNo());
-                        success++;
-                    }
-                }
-                case DUPLICATE -> {
-                    markAll(orderRows, sheet, ResultKind.SKIPPED, "스킵: " + SKIPPED);
-                    skipped++;
-                }
-                case FAILED -> {
-                    markAll(orderRows, sheet, ResultKind.FAILED, "실패: " + result.message());
-                    failed++;
-                }
-            }
-        }
-        byte[] resultFile = sheet.toBytes();
-        watch.stop();
-        log.info("주문 시딩 완료: rows={}, orders={}, success={}, unmapped={}, skipped={}, failed={}, elapsedMs={}, phasesMs={}",
-                rows.size(), orders.size(), success, unmapped, skipped, failed, watch.getTotalTimeMillis(),
-                phases(watch));
-        return new OrderSeedResult(resultFile, success, unmapped, skipped, failed);
     }
 
-    /** parse=120, validateRows=80, ... (ms) */
-    private static String phases(StopWatch watch) {
-        return Arrays.stream(watch.getTaskInfo())
-                .map(task -> task.getTaskName() + "=" + task.getTimeMillis())
-                .collect(Collectors.joining(", ", "{", "}"));
+    private OrderSeedResult process(SeedUpload upload, Long brandId) {
+        // 단계별 소요 시간 (README 성능 수치의 출처 — 완료 로그에 함께 남긴다). 2차 패스는 청크마다 누적한다
+        Phases phases = new Phases();
+        long started = System.nanoTime();
+        OrderSeedSheet sheet = OrderSeedSheet.open(upload.path());
+
+        // 1차 패스: 주문 인덱스
+        SeedOrderIndex.Builder indexBuilder = new SeedOrderIndex.Builder();
+        sheet.forEachDataRow((rowIndex, cells) -> {
+            if (!sheet.isBlank(cells)) {
+                indexBuilder.add(rowIndex, sheet.orderKey(rowIndex, cells));
+            }
+        });
+        if (indexBuilder.rowCount() == 0) {
+            throw new InvalidSeedFileException("데이터 행이 없습니다.");
+        }
+        SeedOrderIndex index = indexBuilder.build();
+        phases.add("index", started);
+
+        // 2차 패스: 청크 처리
+        SeedResultStore results = new SeedResultStore(index);
+        ChunkProcessor processor = new ChunkProcessor(index, results, new RowValidator(loadChannels(), brandId),
+                brandId, phases);
+        long pass2 = System.nanoTime();
+        sheet.forEachDataRow((rowIndex, cells) -> {
+            if (!sheet.isBlank(cells)) {
+                processor.accept(sheet.parseRow(rowIndex, cells));
+            }
+        });
+        processor.finish();
+        phases.addRemainder("validate", pass2, "register");
+
+        // 3차 패스: 결과 파일
+        long pass3 = System.nanoTime();
+        byte[] resultFile = sheet.writeResultFile(results);
+        phases.add("writeResult", pass3);
+
+        Counts counts = processor.counts;
+        log.info("주문 시딩 완료: rows={}, orders={}, chunks={}, success={}, unmapped={}, skipped={}, failed={}, elapsedMs={}, phasesMs={}",
+                indexBuilder.rowCount(), index.orderCount(), processor.chunks, counts.success, counts.unmapped,
+                counts.skipped, counts.failed, (System.nanoTime() - started) / 1_000_000, phases);
+        return new OrderSeedResult(resultFile, counts.success, counts.unmapped, counts.skipped, counts.failed);
+    }
+
+    /** 주문 단위 건수 (전 청크 누적) */
+    private static final class Counts {
+        int success;
+        int unmapped;
+        int skipped;
+        int failed;
+    }
+
+    /** 단계별 누적 시간 (ms) */
+    private static final class Phases {
+        private final Map<String, Long> nanos = new LinkedHashMap<>();
+
+        void add(String phase, long startedNanos) {
+            nanos.merge(phase, System.nanoTime() - startedNanos, Long::sum);
+        }
+
+        /** startedNanos 이후 경과 시간에서 이미 잰 단계(excluded)를 뺀 나머지를 phase로 */
+        void addRemainder(String phase, long startedNanos, String excluded) {
+            long elapsed = System.nanoTime() - startedNanos;
+            nanos.put(phase, elapsed - nanos.getOrDefault(excluded, 0L));
+            // 표시 순서: validate 다음 register
+            Long register = nanos.remove(excluded);
+            if (register != null) {
+                nanos.put(excluded, register);
+            }
+        }
+
+        @Override
+        public String toString() {
+            return nanos.entrySet().stream()
+                    .map(e -> e.getKey() + "=" + e.getValue() / 1_000_000)
+                    .collect(Collectors.joining(", ", "{", "}"));
+        }
+    }
+
+    /**
+     * 2차 패스 행 소비자. 주문의 모든 행이 들어오면(1차 인덱스의 행 수 기준) 완성 주문으로 옮기고,
+     * 완성 주문이 chunkOrders개 모이면 청크를 처리한다. 미완성 주문의 행만 청크 사이에 남는다.
+     */
+    private final class ChunkProcessor {
+
+        private final SeedOrderIndex index;
+        private final SeedResultStore results;
+        private final RowValidator rowValidator;
+        private final Long brandId;
+        private final Phases phases;
+        private final Map<Integer, List<OrderSeedRow>> pending = new HashMap<>();
+        private final List<List<OrderSeedRow>> ready = new ArrayList<>();
+        private final Counts counts = new Counts();
+        private int chunks;
+
+        ChunkProcessor(SeedOrderIndex index, SeedResultStore results, RowValidator rowValidator, Long brandId,
+                       Phases phases) {
+            this.index = index;
+            this.results = results;
+            this.rowValidator = rowValidator;
+            this.brandId = brandId;
+            this.phases = phases;
+        }
+
+        void accept(OrderSeedRow row) {
+            int seq = index.orderOf(row.rowIndex());
+            List<OrderSeedRow> orderRows = pending.computeIfAbsent(seq, k -> new ArrayList<>());
+            orderRows.add(row);
+            if (orderRows.size() == index.rowCountOf(seq)) {
+                pending.remove(seq);
+                ready.add(orderRows);
+                if (ready.size() >= chunkOrders) {
+                    processChunk();
+                }
+            }
+        }
+
+        void finish() {
+            if (!ready.isEmpty()) {
+                processChunk();
+            }
+            if (!pending.isEmpty()) {
+                // 1차·2차 패스가 같은 파일을 같은 규칙으로 읽으므로 생길 수 없다
+                throw new IllegalStateException("완성되지 않은 주문이 남았습니다. orders=" + pending.keySet());
+            }
+        }
+
+        /** 청크분 일괄 조회 → 행·주문 검증 → 등록+할당 → 결과 보관. 끝나면 청크 데이터를 버린다 */
+        private void processChunk() {
+            chunks++;
+            rowValidator.validate(ready.stream().flatMap(List::stream).toList());
+
+            List<List<OrderSeedRow>> valid = new ArrayList<>();
+            for (List<OrderSeedRow> orderRows : ready) {
+                validateCommonInfo(orderRows);
+                if (orderRows.stream().anyMatch(OrderSeedRow::hasErrors)) {
+                    recordFailed(orderRows);
+                    counts.failed++;
+                } else {
+                    valid.add(orderRows);
+                }
+            }
+
+            long registerStarted = System.nanoTime();
+            List<OrderRegistrationResult> registered = orderRegistrationService.registerAll(
+                    valid.stream().map(orderRows -> toCommand(orderRows, brandId)).toList());
+            phases.add("register", registerStarted);
+
+            for (int i = 0; i < valid.size(); i++) {
+                List<OrderSeedRow> orderRows = valid.get(i);
+                OrderRegistrationResult result = registered.get(i);
+                int seq = seqOf(orderRows);
+                switch (result.status()) {
+                    case REGISTERED -> {
+                        if (result.mappingPending()) {
+                            results.recordOrder(seq, ResultKind.UNMAPPED, result.orderNo());
+                            orderRows.stream().filter(OrderSeedRow::isUnmapped)
+                                    .forEach(row -> results.recordRowDetail(row.rowIndex(), row.unmappedReason()));
+                            counts.unmapped++;
+                        } else {
+                            results.recordOrder(seq, ResultKind.SUCCESS, result.orderNo());
+                            counts.success++;
+                        }
+                    }
+                    case DUPLICATE -> {
+                        results.recordOrder(seq, ResultKind.SKIPPED, null);
+                        counts.skipped++;
+                    }
+                    case FAILED -> {
+                        results.recordOrder(seq, ResultKind.FAILED, result.message());
+                        counts.failed++;
+                    }
+                }
+            }
+            ready.clear();
+        }
+
+        /** 원인 행엔 구체적 사유, 나머지 행은 "동일 주문 내 다른 행 오류로 미처리" (SeedResultStore가 조립) */
+        private void recordFailed(List<OrderSeedRow> orderRows) {
+            results.recordOrder(seqOf(orderRows), ResultKind.FAILED, null);
+            orderRows.stream().filter(OrderSeedRow::hasErrors)
+                    .forEach(row -> results.recordRowDetail(row.rowIndex(), String.join("; ", row.errors())));
+        }
+
+        private int seqOf(List<OrderSeedRow> orderRows) {
+            return index.orderOf(orderRows.getFirst().rowIndex());
+        }
     }
 
     private Brand validateTarget(Long brandId) {
@@ -255,43 +385,6 @@ public class OrderSeedService {
                 unitPrice);
     }
 
-    /** 원인 행엔 구체적 사유, 나머지 행엔 "동일 주문 내 다른 행 오류로 미처리" */
-    private static void markFailed(List<OrderSeedRow> orderRows, OrderSeedSheet sheet) {
-        for (OrderSeedRow row : orderRows) {
-            String reason = row.hasErrors() ? String.join("; ", row.errors()) : SIBLING_FAILED;
-            sheet.writeResult(row.rowIndex(), ResultKind.FAILED, "실패: " + reason);
-        }
-    }
-
-    /** 모든 행에 매핑안됨 표기, 매핑 없는 행에는 사유를 덧붙인다 */
-    private static void markUnmapped(List<OrderSeedRow> orderRows, OrderSeedSheet sheet, String orderNo) {
-        for (OrderSeedRow row : orderRows) {
-            String message = "성공(매핑안됨): " + orderNo + (row.isUnmapped() ? " - " + row.unmappedReason() : "");
-            sheet.writeResult(row.rowIndex(), ResultKind.UNMAPPED, message);
-        }
-    }
-
-    private static void markAll(List<OrderSeedRow> orderRows, OrderSeedSheet sheet, ResultKind kind, String message) {
-        orderRows.forEach(row -> sheet.writeResult(row.rowIndex(), kind, message));
-    }
-
-    /**
-     * (채널코드, 채널주문번호)로 묶는다. 행이 떨어져 있어도 같은 주문이고, 첫 등장 순서를 유지한다.
-     * 둘 중 하나라도 비어 있는 행은 묶을 수 없으므로 단독 그룹 (이미 필수값 오류).
-     */
-    private static List<List<OrderSeedRow>> groupByOrder(List<OrderSeedRow> rows) {
-        Map<String, List<OrderSeedRow>> groups = new LinkedHashMap<>();
-        for (OrderSeedRow row : rows) {
-            String channelCode = row.text(OrderSeedColumn.CHANNEL_CODE);
-            String channelOrderNo = row.text(OrderSeedColumn.CHANNEL_ORDER_NO);
-            String key = channelCode == null || channelOrderNo == null
-                    ? "#row-" + row.rowIndex()
-                    : channelCode + '\u0000' + channelOrderNo;
-            groups.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
-        }
-        return new ArrayList<>(groups.values());
-    }
-
     private Map<String, SalesChannel> loadChannels() {
         return salesChannelRepository.findAll().stream()
                 .collect(Collectors.toMap(SalesChannel::getCode, Function.identity()));
@@ -325,6 +418,7 @@ public class OrderSeedService {
                     mappingKeys.add(mappingKey(row));
                 }
             }
+            // 청크 수명 캐시: 이 청크 처리가 끝나면 버려진다
             MappingHistory mappings = channelProductResolver.loadHistory(brandId, mappingKeys);
             Map<String, Long> giftProductIds = loadProductIdsBySku(giftSkus);
 

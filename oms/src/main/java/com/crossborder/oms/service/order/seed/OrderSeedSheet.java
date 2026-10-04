@@ -5,6 +5,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -18,6 +21,7 @@ import java.util.regex.Pattern;
 import javax.xml.parsers.ParserConfigurationException;
 import org.apache.poi.openxml4j.exceptions.OpenXML4JException;
 import org.apache.poi.openxml4j.opc.OPCPackage;
+import org.apache.poi.openxml4j.opc.PackageAccess;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.DataFormatter;
@@ -122,12 +126,38 @@ class OrderSeedSheet {
 
     /**
      * 첫 시트를 스트리밍으로 읽는다. xlsx만 지원한다.
+     * <p>
+     * 업로드를 임시 파일로 받은 뒤 파일로 연다. {@code OPCPackage.open(InputStream)}은 zip 엔트리를 전부 압축 해제해
+     * 메모리에 올리므로(5만 행 시트 XML이 힙 128MB에서 OOM), 파일 기반으로 열어 필요한 엔트리만 읽게 한다.
      */
     static OrderSeedSheet read(InputStream in) {
+        Path file;
+        try {
+            file = Files.createTempFile("order-seed-", ".xlsx");
+        } catch (IOException e) {
+            throw new UncheckedIOException("시딩 임시 파일을 만들 수 없습니다.", e);
+        }
+        try {
+            try {
+                Files.copy(in, file, StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                throw new InvalidSeedFileException("업로드 파일을 읽을 수 없습니다.", e);
+            }
+            return read(file);
+        } finally {
+            try {
+                Files.deleteIfExists(file);
+            } catch (IOException ignored) {
+                // OS 임시 디렉터리라 남아도 정리된다
+            }
+        }
+    }
+
+    private static OrderSeedSheet read(Path file) {
         OPCPackage pkg;
         try {
-            pkg = OPCPackage.open(in);
-        } catch (IOException | OpenXML4JException | RuntimeException e) {
+            pkg = OPCPackage.open(file.toFile(), PackageAccess.READ);
+        } catch (OpenXML4JException | RuntimeException e) {
             // POI는 형식 오류를 여러 런타임 예외(NotOfficeXmlFileException 등)로 던진다
             throw new InvalidSeedFileException("엑셀(xlsx) 파일을 읽을 수 없습니다.", e);
         }

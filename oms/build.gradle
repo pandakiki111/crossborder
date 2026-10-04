@@ -24,3 +24,16 @@ dependencies {
 bootRun {
     systemProperty 'spring.profiles.active', 'local'
 }
+
+// 성능 측정용 주문 시딩 엑셀 생성 (README "주문 엑셀 시딩 > 성능" 참고)
+// 예: ./gradlew :oms:generateSeedFile -Prows=10000 -Pprefix=P10K
+tasks.register('generateSeedFile', JavaExec) {
+    group = 'tools'
+    description = '성능 측정용 주문 시딩 엑셀 생성 (로컬 테스트 데이터 기준)'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.crossborder.oms.service.order.seed.OrderSeedFileGenerator'
+    def rows = project.findProperty('rows') ?: '10000'
+    def prefix = project.findProperty('prefix') ?: "P${System.currentTimeMillis()}"
+    def out = project.findProperty('out') ?: "build/seed/orders-${rows}.xlsx"
+    args rows, prefix, out
+}

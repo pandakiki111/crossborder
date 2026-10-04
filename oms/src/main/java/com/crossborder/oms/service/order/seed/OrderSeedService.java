@@ -23,6 +23,7 @@ import com.crossborder.oms.service.support.InClause;
 import java.io.InputStream;
 import java.math.BigDecimal;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -35,6 +36,7 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StopWatch;
 
 /**
  * 주문 엑셀 시딩 (수동 수집). 스트리밍 파싱 → 사전 일괄 조회 → 행 검증 → 주문 그룹핑 → 주문 검증
@@ -102,13 +104,20 @@ public class OrderSeedService {
     @ScopeCheck(ScopeTarget.BRAND)
     public OrderSeedResult seed(InputStream in, @ScopeId Long brandId) {
         Brand brand = validateTarget(brandId);
+        // 단계별 소요 시간 (README 성능 수치의 출처 — 완료 로그에 함께 남긴다)
+        StopWatch watch = new StopWatch();
+        watch.start("parse");
         OrderSeedSheet sheet = OrderSeedSheet.read(in);
         List<OrderSeedRow> rows = sheet.readRows();
+        watch.stop();
         if (rows.isEmpty()) {
             throw new InvalidSeedFileException("데이터 행이 없습니다.");
         }
 
+        watch.start("validateRows");
         new RowValidator(loadChannels(), brand.getId()).validate(rows);
+        watch.stop();
+        watch.start("validateOrders");
         List<List<OrderSeedRow>> orders = groupByOrder(rows);
 
         List<List<OrderSeedRow>> valid = new ArrayList<>();
@@ -123,8 +132,14 @@ public class OrderSeedService {
             }
         }
 
+        watch.stop();
+
+        watch.start("register");
         List<OrderRegistrationResult> results = orderRegistrationService.registerAll(
                 valid.stream().map(orderRows -> toCommand(orderRows, brand.getId())).toList());
+        watch.stop();
+
+        watch.start("writeResult");
 
         int success = 0;
         int unmapped = 0;
@@ -152,9 +167,19 @@ public class OrderSeedService {
                 }
             }
         }
-        log.info("주문 시딩 완료: rows={}, success={}, unmapped={}, skipped={}, failed={}",
-                rows.size(), success, unmapped, skipped, failed);
-        return new OrderSeedResult(sheet.toBytes(), success, unmapped, skipped, failed);
+        byte[] resultFile = sheet.toBytes();
+        watch.stop();
+        log.info("주문 시딩 완료: rows={}, orders={}, success={}, unmapped={}, skipped={}, failed={}, elapsedMs={}, phasesMs={}",
+                rows.size(), orders.size(), success, unmapped, skipped, failed, watch.getTotalTimeMillis(),
+                phases(watch));
+        return new OrderSeedResult(resultFile, success, unmapped, skipped, failed);
+    }
+
+    /** parse=120, validateRows=80, ... (ms) */
+    private static String phases(StopWatch watch) {
+        return Arrays.stream(watch.getTaskInfo())
+                .map(task -> task.getTaskName() + "=" + task.getTimeMillis())
+                .collect(Collectors.joining(", ", "{", "}"));
     }
 
     private Brand validateTarget(Long brandId) {

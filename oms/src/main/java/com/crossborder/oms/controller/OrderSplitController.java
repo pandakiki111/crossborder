@@ -1,11 +1,10 @@
 package com.crossborder.oms.controller;
 
-import com.crossborder.oms.dto.order.OrderSplitRequest;
-import com.crossborder.oms.dto.order.ShipmentResponse;
-import com.crossborder.oms.dto.order.SplitPreviewResponse;
+import com.crossborder.oms.dto.shipment.BulkResult;
+import com.crossborder.oms.dto.shipment.BulkSplitRequest;
+import com.crossborder.oms.dto.shipment.ShipmentResponse;
 import com.crossborder.oms.security.AuthenticatedUser;
-import com.crossborder.oms.service.order.OrderSplitService;
-import jakarta.validation.Valid;
+import com.crossborder.oms.service.shipment.OrderSplitService;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -18,10 +17,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * 주문 분리 (출고 회차 생성). 미리보기로 자동 제안을 받고, 그대로 또는 고쳐서 확정한다.
+ * 주문 분리 (출고 회차 생성)와 분리 결과 조회.
  */
 @RestController
-@RequestMapping("/api/orders/{orderId}/split")
+@RequestMapping("/api/orders")
 public class OrderSplitController {
 
     private final OrderSplitService orderSplitService;
@@ -30,15 +29,23 @@ public class OrderSplitController {
         this.orderSplitService = orderSplitService;
     }
 
-    @GetMapping("/preview")
-    public SplitPreviewResponse preview(@PathVariable Long orderId, @AuthenticationPrincipal AuthenticatedUser user) {
-        return orderSplitService.preview(orderId, user);
+    /** 단건 분리. CREATED 회차만 있으면 재분리 (기존 CREATED 회차는 CANCELED) */
+    @PostMapping("/{orderId}/splits")
+    public ResponseEntity<List<ShipmentResponse>> split(@PathVariable Long orderId,
+                                                        @AuthenticationPrincipal AuthenticatedUser user) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(orderSplitService.split(orderId, user));
     }
 
-    @PostMapping
-    public ResponseEntity<List<ShipmentResponse>> split(@PathVariable Long orderId,
-                                                        @Valid @RequestBody OrderSplitRequest request,
-                                                        @AuthenticationPrincipal AuthenticatedUser user) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(orderSplitService.split(orderId, request, user));
+    /** 일괄 분리 (orderIds 명시, 최대 500건). 주문별 성공/실패 요약 */
+    @PostMapping("/splits")
+    public BulkResult<List<ShipmentResponse>> splitAll(@RequestBody BulkSplitRequest request,
+                                                       @AuthenticationPrincipal AuthenticatedUser user) {
+        return orderSplitService.splitAll(request.orderIds(), user);
+    }
+
+    /** 분리 결과 조회 (취소된 회차 포함, 경고는 조회 시 계산) */
+    @GetMapping("/{orderId}/shipments")
+    public List<ShipmentResponse> shipments(@PathVariable Long orderId) {
+        return orderSplitService.shipments(orderId);
     }
 }

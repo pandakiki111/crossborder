@@ -9,5 +9,7 @@ public interface ShipmentItemRepository extends JpaRepository<ShipmentItem, Long
 
     List<ShipmentItem> findByOrderItemIdIn(Collection<Long> orderItemIds);
 
+    List<ShipmentItem> findByShipmentIdIn(Collection<Long> shipmentIds);
+
     boolean existsByShipmentId(Long shipmentId);
 }

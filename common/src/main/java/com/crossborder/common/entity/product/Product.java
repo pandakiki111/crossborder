@@ -42,6 +42,10 @@ public class Product extends BaseAuditEntity {
     @Column(name = "customs_category_id")
     private Long customsCategoryId;
 
+    /** 재고 1단위당 통관 환산 수량 (10매입 박스 = 10). 분류 한도 판정 = Σ(전개 수량 × 이 값) */
+    @Column(name = "customs_unit_qty", nullable = false)
+    private int customsUnitQty = 1;
+
     @Column(name = "hs_code", length = 20)
     private String hsCode;
 
@@ -109,6 +113,13 @@ public class Product extends BaseAuditEntity {
         this.barcode = barcode;
         this.unitPrice = unitPrice;
         this.currency = currency;
+    }
+
+    public void changeCustomsUnitQty(int customsUnitQty) {
+        if (customsUnitQty < 1) {
+            throw new IllegalArgumentException("통관 환산 수량은 1 이상이어야 합니다. sku=" + sku + ", value=" + customsUnitQty);
+        }
+        this.customsUnitQty = customsUnitQty;
     }
 
     public void changeCustomsInfo(Long customsCategoryId, String hsCode, String origin) {

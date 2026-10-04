@@ -13,6 +13,7 @@ import com.crossborder.oms.exception.NotFoundException;
 import com.crossborder.oms.repository.BrandRepository;
 import com.crossborder.oms.repository.OrderItemRepository;
 import com.crossborder.oms.repository.OrderRepository;
+import com.crossborder.oms.repository.ShipmentRepository;
 import com.crossborder.oms.security.AuthenticatedUser;
 import java.util.List;
 import java.util.Optional;
@@ -40,7 +41,8 @@ class ScopeCheckAspectTest {
 
     @BeforeEach
     void setUp() {
-        ScopePolicy policy = new ScopePolicy(brandRepository, orderRepository, orderItemRepository);
+        ScopePolicy policy = new ScopePolicy(brandRepository, orderRepository, orderItemRepository,
+                mock(ShipmentRepository.class));
         AspectJProxyFactory factory = new AspectJProxyFactory(target);
         factory.setProxyTargetClass(true);
         factory.addAspect(new ScopeCheckAspect(policy));

@@ -3,6 +3,7 @@ package com.crossborder.oms.dto.order;
 import com.crossborder.common.entity.order.OrderItemStatus;
 import com.crossborder.common.entity.order.OrderItemType;
 import com.crossborder.common.entity.order.OrderStatus;
+import com.crossborder.oms.dto.shipment.ShipmentResponse;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;

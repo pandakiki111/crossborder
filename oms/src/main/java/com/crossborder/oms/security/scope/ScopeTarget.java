@@ -5,5 +5,7 @@ package com.crossborder.oms.security.scope;
  */
 public enum ScopeTarget {
     BRAND,
-    ORDER
+    ORDER,
+    /** 출고 회차 — 회차 브랜드 기준 (ADMIN 전체 / COMPANY_STAFF 자기 회사 브랜드 / BRAND_STAFF 자기 브랜드) */
+    SHIPMENT
 }

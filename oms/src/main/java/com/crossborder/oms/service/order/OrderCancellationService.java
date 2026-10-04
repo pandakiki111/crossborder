@@ -27,6 +27,7 @@ import com.crossborder.oms.security.scope.ScopeId;
 import com.crossborder.oms.security.scope.ScopePolicy;
 import com.crossborder.oms.security.scope.ScopeTarget;
 import com.crossborder.oms.service.stock.StockAllocator;
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
@@ -60,7 +61,7 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li>전량이면 cancel(), 일부면 splitCanceled(행 분할). 사은품은 전체 취소만 (엔티티 규칙)</li>
  *   <li>할당 해제: 할당 완료 주문이면 취소 수량의 전개분만큼 allocated 감소 (제품 락)</li>
  *   <li>CREATED 회차 정리: 미배정 수량부터 소진하고 모자라는 만큼만 CREATED 회차에서 회차 번호 역순으로 감량.
- *       회차가 비면 CANCELED</li>
+ *       회차가 비면 CANCELED, 남은 회차는 금액 재계산 (Σ 단가 × 배정 수량)</li>
  *   <li>주문 상태: 전 항목 취소면 CANCELED, 일부면 cancelPartially (PAID → PARTIAL_CANCELED, SHIPPING은 유지)</li>
  *   <li>상태 이력: ORDER 변경 + 비어서 취소된 SHIPMENT</li>
  * </ol>
@@ -159,6 +160,7 @@ public class OrderCancellationService {
         shipmentItemRepository.flush();
 
         List<Long> canceledShipmentIds = cancelEmptyShipments(touchedShipmentIds, userId);
+        recalculateAmounts(touchedShipmentIds, orderItems);
         Map<Long, Integer> allocation = completeMappingIfResolved(order, orderItems.values(), compositions);
 
         Set<Long> required = new TreeSet<>(deallocation.keySet());
@@ -286,6 +288,27 @@ public class OrderCancellationService {
         }
         canceled.sort(Long::compareTo);
         return canceled;
+    }
+
+    /**
+     * 배정이 줄었지만 남은(CREATED) 회차의 금액을 분리 때와 같은 규칙으로 다시 계산한다:
+     * Σ(배정 항목 단가 스냅샷 × 배정 수량). 부분취소로 분할된 행도 원래 행과 단가가 같다.
+     */
+    private void recalculateAmounts(Set<Long> shipmentIds, Map<Long, OrderItem> orderItems) {
+        if (shipmentIds.isEmpty()) {
+            return;
+        }
+        Map<Long, List<ShipmentItem>> assignments = shipmentItemRepository.findByShipmentIdIn(shipmentIds).stream()
+                .collect(Collectors.groupingBy(ShipmentItem::getShipmentId));
+        for (Shipment shipment : shipmentRepository.findAllById(shipmentIds)) {
+            if (shipment.getStatus() != ShipmentStatus.CREATED) {
+                continue;
+            }
+            BigDecimal amount = assignments.getOrDefault(shipment.getId(), List.of()).stream()
+                    .map(a -> orderItems.get(a.getOrderItemId()).getUnitPrice().multiply(BigDecimal.valueOf(a.getQuantity())))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            shipment.changeTotalAmount(amount);
+        }
     }
 
     /**

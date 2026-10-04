@@ -300,10 +300,16 @@ Flyway 마이그레이션은 각자 자기 DB만 실행하고, auth는 oms DB를
   - 소급·정합 검증 API는 ADMIN 전용(/api/admin/allocations), 동기 실행, 주기 실행은 하지 않는다.
     consistency: 할당 완료 주문의 유효 항목 전개 합 = allocated_stock 비교 + 미할당·매핑안됨 주문 수.
     정합 기대값은 출고 차감이 없는 현재 기준 — 출고 Phase에서 출고분을 빼도록 바꾼다.
-- 통관: customs_categories 분류 단위로 수량 한도 합산 판정 (시트마스크 120매).
-  products.customs_unit_qty = 재고 1단위당 통관 계수 (10매입 박스=10).
-  판정 수량 = Σ(주문수량 × customs_unit_qty), 분류별 그룹핑.
-  총 수량 한도(24개)는 분류 무관 전체 합산, 설정값.
+- 통관 (일본 화장품 개인 수입 기준):
+  - 규정: 1품목당 표준 사이즈 24개 이내, 소용량(60g·60ml 이하) 120개 이내.
+    섞여 있으면 소용량 개수를 표준으로 환산하는 식 ((24 − 표준 개수) × 5 = 허용 소용량 개수)이 쓰이며, 참고로만 둔다.
+    출처: 일본 세관 Customs Answer 1806 「医薬品・化粧品等の個人輸入について」, 후생노동성(관동신에츠 후생국) 의약품 등 수입 안내.
+  - 자동 분할(확실한 규칙): customs_categories 분류 단위 환산 한도. 분류별 Σ(전개 수량 × products.customs_unit_qty)
+    > qty_limit 이면 회차 분할 (시트마스크 120매가 대표, 10매입 박스 customs_unit_qty = 10). split_reason = CUSTOMS_LIMIT.
+  - 경고만(불확실한 규칙): "품목당 24개"의 품목 판별이 데이터로 불가하다 (샴푸·린스 구분 수준의 분류 체계 없음).
+    그래서 회차 전체 개수(판매상품 단위, 환산 없음) > crossborder.customs.quantity-warn-threshold(기본 24)면
+    경고만 내고 분할하지 않는다 — 품목 판별 불가로 전체 개수 경고로 근사한다. 경고는 분리 응답·회차 조회에서 계산값으로만
+    주고 저장하지 않는다 (기준이 바뀌어도 재계산 불요, 분리 시점 판단 보조). QUANTITY_LIMIT는 현재 미사용.
 
 ### §5. 주문 / 출고
 
@@ -326,6 +332,26 @@ Flyway 마이그레이션은 각자 자기 DB만 실행하고, auth는 oms DB를
   CREATED(분리만) → INSTRUCTED → PICKED → PACKED → PALLETIZED → MASTER_SHIPPED / CANCELED.
   한 회차 = 단일 브랜드. shipment_no(표시·스캔용), split_reason 보유.
 - 분리와 출고지시는 독립 행위 (분리만 해두고 나중에 지시 가능).
+- 분리 (POST /api/orders/{orderId}/splits, 일괄 POST /api/orders/splits — orderIds 명시, 주문별 독립 트랜잭션·성공/실패 요약):
+  - 대상: 매핑 완료 + PAID·PARTIAL_CANCELED + 유효 항목 1개 이상. 분리 시점에 판매상품 구성으로 제품 단위 전개 (지연 전개).
+  - 규칙 (ShipmentPlanner): 브랜드별 그룹 → 그룹마다 분류 한도를 넘지 않게 항목을 수량 단위로 항목 id 순 순차 배분
+    (넘치면 새 회차, bin-packing 최적화 안 함). 분할 단위는 주문 항목 1개 — 세트의 구성품은 회차별로 쪼갤 수 없다.
+    항목 1개의 환산수량이 이미 분류 한도를 넘으면 분리 실패 ("단일 상품이 통관 한도 초과: {sku}, 환산수량 N > 한도 M").
+    사은품(건별·구성 고정)도 통관 수량에 포함.
+  - split_reason (브랜드 그룹 단위): 분류 한도로 나뉜 그룹 CUSTOMS_LIMIT > 그 외 멀티브랜드 BRAND_SPLIT > 단일 회차 null.
+  - 스코프: 주문 스코프 + 유효 항목이 전부 사용자 브랜드 범위 (멀티브랜드 주문은 BRAND_STAFF가 분리할 수 없다).
+  - 회차 금액(total_amount) = Σ(배정 항목 unit_price 스냅샷 × 배정 수량). paid_amount를 비례 배분하지 않는다 —
+    단가 스냅샷 기반이 통관 신고 참조값으로 설명 가능하고 할인 구조와 무관하게 결정적이다. 참조값이며 주문 금액과의
+    합계 일치를 강제하지 않는다. 사은품은 0 기여. 취소로 CREATED 회차 배정이 줄면 같은 규칙으로 재계산.
+  - 재분리: CREATED 회차만 있으면 기존 CREATED 회차를 전부 CANCELED 처리하고 다시 분리 (부분취소 후 재분리가 주 용도).
+    INSTRUCTED 이상이 하나라도 있으면 거부. 회차 번호는 취소된 회차 포함 최대 번호 다음부터 (shipment_no 유니크).
+  - 분리 결과 조회: GET /api/orders/{orderId}/shipments (취소 회차 포함, 경고 계산).
+- 출고지시 (POST /api/shipments/{shipmentId}/instruct, 일괄 POST /api/shipments/instruct — 회차 단위):
+  - CREATED → INSTRUCTED, instructed_by/at (Clock). 첫 지시 시점에 주문 SHIPPING. ORDER·SHIPMENT 상태 이력.
+  - 스코프: 회차 브랜드 기준 (ScopePolicy SHIPMENT). cbt 출고 접수 호출은 하지 않는다 (출고 연동 Phase).
+  - 주문 행 락으로 취소 판정과 직렬화한다. 지시는 재고를 바꾸지 않아 주문 행 락만 잡는다 (전 경로 순서 규칙: 제품 락 → 주문 행 락).
+    순서를 강제한 테스트로 검증: 취소 커밋 전에 들어온 지시는 커밋을 기다렸다가 거부되고, 그 반대도 같다.
+  - 지시 이후 회차의 항목·수량·금액은 바뀌지 않는다 (취소는 INSTRUCTED 배정분을 제외하고, 재분리는 거부).
   주문 SHIPPING 전이는 첫 INSTRUCTED 시점.
 - 회차 상태 전이 소유권: 생성·instruct()·cancel()까지 oms. PICKED 이후 전이(pick/pack/palletize/masterShip)는
   cbt 콜백 처리에서만 호출한다 — oms 서비스에서 PICKED 이후 전이를 호출하는 코드를 만들지 않는다 (Shipment javadoc).
@@ -345,7 +371,7 @@ Flyway 마이그레이션은 각자 자기 DB만 실행하고, auth는 oms DB를
   - 락 순서: 제품 분산 락 → 주문 행 락(PESSIMISTIC_WRITE). 시딩·소급 할당(제품 락 → 주문 행)과 같은 순서라 교착이 없다.
     제품 락 키는 행 잠금 전에 주문 전체 항목의 전개로 정하고, 잠근 뒤 필요한 제품이 범위를 벗어나면 409(재시도).
     판정은 주문 행 잠금 이후 같은 트랜잭션에서 하므로 판정에 쓴 회차 배정 수량과 실제 감량이 일치한다.
-    (출고지시 구현 시 instruct도 같은 주문 행 락을 잡아야 이 정합이 유지된다)
+    (출고지시도 같은 주문 행 락을 잡아 이 정합이 유지된다 — 아래 출고지시 참고)
 - 상태 변경 이력은 order_status_history 통합 (target_type ORDER/SHIPMENT).
 
 ### §6. 엑셀 시딩 (Phase 1)
@@ -388,7 +414,8 @@ Flyway 마이그레이션은 각자 자기 DB만 실행하고, auth는 oms DB를
 - 수집 API (매핑안됨 보관 구조는 §5로 확정, 시딩과 공유)
 - 채널 재고 밀어내기 (ChannelInventorySync 경합 처리 포함)
 - 다창고 분리, 반품 검수, sale_products predecessor 추적
-- 취소로 CREATED 회차 배정이 줄 때 shipments.total_amount 재산정 (산정 규칙이 분리 기능과 함께 정해지므로 지금은 갱신하지 않음)
+- 품목 단위 통관 한도 분할 ("품목당 24개"): 품목 분류 체계가 생기면 SplitReason.QUANTITY_LIMIT로 도입. 지금은 개수 경고만
+- 분리 미리보기(dry-run) API: 화면을 붙일 때 필요하면
 - 마켓 수집발 취소 (수집 API와 함께), 출고 완료 시 physical 차감 (출고 Phase), 등록-할당 정합 검증의 주기 실행
 - oms·cbt 출고 연동 (출고 Phase에서 설계 후 구현). 필요해 보이면 만들지 말고 질문으로 올릴 것:
   - cbt 스키마(접수건/작업 테이블) 설계와 마이그레이션

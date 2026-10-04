@@ -13,6 +13,11 @@ dependencies {
 
     // 주문 엑셀 시딩 (양식 다운로드·업로드 결과 파일)
     implementation "org.apache.poi:poi-ooxml:${poiVersion}"
+
+    // 실제 DB(MariaDB) 대상 리포지토리 테스트. 버전은 docker-compose.yml과 맞춘다
+    testImplementation 'org.springframework.boot:spring-boot-testcontainers'
+    testImplementation 'org.testcontainers:junit-jupiter'
+    testImplementation 'org.testcontainers:mariadb'
 }
 
 // ./gradlew :oms:bootRun은 로컬 실행이므로 local 프로필(테스트 데이터 시딩) 적용

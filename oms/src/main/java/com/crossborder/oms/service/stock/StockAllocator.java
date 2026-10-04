@@ -34,6 +34,8 @@ public class StockAllocator {
     private static final String LOCK_KEY_PREFIX = "stock:product:";
     private static final String INCREASE_ALLOCATED =
             "UPDATE products SET allocated_stock = allocated_stock + ? WHERE id = ?";
+    private static final String DECREASE_ALLOCATED =
+            "UPDATE products SET allocated_stock = allocated_stock - ? WHERE id = ? AND allocated_stock >= ?";
 
     private final SaleProductItemRepository saleProductItemRepository;
     private final JdbcTemplate jdbcTemplate;
@@ -78,6 +80,22 @@ public class StockAllocator {
         return quantities;
     }
 
+    /** 항목 하나의 일부 수량 전개 (취소 수량의 할당 해제분) */
+    public static Map<Long, Integer> expand(OrderItem item, int quantity, Map<Long, List<SaleProductItem>> compositions) {
+        Map<Long, Integer> quantities = new TreeMap<>();
+        if (item.getItemType() == OrderItemType.GIFT_PRODUCT) {
+            quantities.put(item.getProductId(), quantity);
+            return quantities;
+        }
+        if (!item.isMapped()) {
+            throw new IllegalStateException("판매상품이 확정되지 않은 항목은 전개할 수 없습니다. orderItemId=" + item.getId());
+        }
+        for (SaleProductItem component : compositions.getOrDefault(item.getSaleProductId(), List.of())) {
+            quantities.merge(component.getProductId(), component.getQuantity() * quantity, Integer::sum);
+        }
+        return quantities;
+    }
+
     /** 여러 주문의 전개 결과 합산 */
     public static Map<Long, Integer> sum(Collection<Map<Long, Integer>> allocations) {
         Map<Long, Integer> total = new TreeMap<>();
@@ -102,4 +120,18 @@ public class StockAllocator {
         }
     }
 
+    /**
+     * allocated_stock 감소. 트랜잭션 안에서, lockKeys 락을 잡은 상태로 호출한다.
+     * 할당재고보다 많이 해제하면 IllegalStateException (Product.deallocate와 같은 규칙 — 정합이 깨졌다는 신호).
+     */
+    public void decrease(Map<Long, Integer> quantities) {
+        quantities.forEach((productId, qty) -> {
+            if (qty <= 0) {
+                return;
+            }
+            if (jdbcTemplate.update(DECREASE_ALLOCATED, qty, productId, qty) != 1) {
+                throw new IllegalStateException("할당재고보다 많이 해제할 수 없습니다. productId=" + productId + ", 해제=" + qty);
+            }
+        });
+    }
 }

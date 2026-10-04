@@ -124,6 +124,8 @@
     등록됐는데 미할당인 주문은 남지 않는다. (주문마다 락·커밋하면 대량 시딩 왕복이 주문 수만큼 늘어나 묶음 단위로 결정)
   - 매핑안됨 주문은 전개할 수 없어 등록 시 할당하지 않는다. 항목 매핑이 확정될 때마다(OrderMappingService) 그 주문의
     유효 항목이 모두 확정됐는지 보고, 모두 확정이면 즉시 주문 전체를 할당하고 allocated_at을 기록한다 (매핑 확정 = 할당 트리거).
+    매핑안됨 항목을 취소해 해소된 경우도 취소 처리에서 같은 방식으로 할당한다. 단 전 항목이 취소돼 남은 유효 항목이 없으면
+    할당·allocated_at 기록을 하지 않는다 (취소 주문은 allocated_at NULL로 남고 소급 대상에서도 제외).
   - allocated_at은 항상 "주문 전체 할당 완료 시각"이다 (항목 일부만 할당된 주문 상태는 없다).
   - 소급·정합 검증은 관리자 수동 API (ADMIN, /api/admin/allocations, 동기 실행). 소급은 정상 흐름에서 빠진 예외 상황과
     allocated_at 도입 이전 데이터 정리용이다.
@@ -165,6 +167,20 @@
 - 취소 가능 판정은 항목+회차 레벨 (서비스 책임):
   INSTRUCTED 이상 회차에 물린 항목은 취소 불가.
   CREATED 회차 항목 취소 시 회차에서 제거, 빈 회차는 CANCELED.
+- 운영자 수동 취소: POST /api/orders/{orderId}/cancellations, body [{orderItemId, quantity}] (주문 전체 취소 = 전 항목 지정).
+  - 원자적 — 한 항목이라도 거부되면 전체 거부, 부분 성공 없음. 판정 순서와 응답: 형식 400 → 항목 브랜드 스코프 403
+    (ScopePolicy.canAccessBrand, BRAND_STAFF는 자기 브랜드 항목만) → 상태·수량 409. 같은 단계 사유는 모아서 돌려준다.
+  - 취소 가능 수량 = 유효 수량 - INSTRUCTED 이상 회차 배정 수량. 이미 CANCELED 항목 거부.
+    사은품(GIFT_PRODUCT)은 전체 취소만 (엔티티 규칙). 본품 취소 시 사은품 자동 연동 취소 없음 (운영자가 직접 선택).
+  - 처리(한 트랜잭션): 전량 cancel() / 일부 splitCanceled() 행 분할 → 할당 완료 주문이면 취소 수량 전개분만큼 allocated 감소
+    → 미배정 수량부터 소진하고 모자라는 만큼 CREATED 회차를 회차 번호 역순으로 감량(비면 CANCELED)
+    → 주문 상태: 전 항목 취소 CANCELED / 일부 cancelPartially (PAID → PARTIAL_CANCELED, SHIPPING 유지)
+    → 이력: ORDER 변경 + 비어서 취소된 SHIPMENT.
+  - 매핑안됨 항목을 취소해 매핑안됨이 해소되면 매핑 완료로 전이하고 남은 항목을 그때 할당한다.
+  - 락 순서: 제품 분산 락 → 주문 행 락(PESSIMISTIC_WRITE). 시딩·소급 할당(제품 락 → 주문 행)과 같은 순서라 교착이 없다.
+    제품 락 키는 행 잠금 전에 주문 전체 항목의 전개로 정하고, 잠근 뒤 필요한 제품이 범위를 벗어나면 409(재시도).
+    판정은 주문 행 잠금 이후 같은 트랜잭션에서 하므로 판정에 쓴 회차 배정 수량과 실제 감량이 일치한다.
+    (출고지시 구현 시 instruct도 같은 주문 행 락을 잡아야 이 정합이 유지된다)
 - 상태 변경 이력은 order_status_history 통합 (target_type ORDER/SHIPMENT).
 
 ## 6. 엑셀 시딩 (Phase 1)
@@ -205,6 +221,8 @@
 - 수집 API (매핑안됨 보관 구조는 §5로 확정, 시딩과 공유)
 - 채널 재고 밀어내기 (ChannelInventorySync 경합 처리 포함)
 - 다창고 분리, 반품 검수, sale_products predecessor 추적
+- 취소로 CREATED 회차 배정이 줄 때 shipments.total_amount 재산정 (산정 규칙이 분리 기능과 함께 정해지므로 지금은 갱신하지 않음)
+- 마켓 수집발 취소 (수집 API와 함께), 출고 완료 시 physical 차감 (출고 Phase), 등록-할당 정합 검증의 주기 실행
 - oms·cbt 출고 연동 (출고 Phase에서 설계 후 구현). 필요해 보이면 만들지 말고 질문으로 올릴 것:
   - cbt 스키마(접수건/작업 테이블) 설계와 마이그레이션
   - 출고 접수 API의 payload 계약, LogisticsClient 인터페이스와 구현체

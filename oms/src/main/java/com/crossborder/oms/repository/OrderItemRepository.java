@@ -12,6 +12,14 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, Long> {
 
     boolean existsByOrderIdAndBrandId(Long orderId, Long brandId);
 
+    /** 주문 항목의 판매상품 id (엔티티를 영속성 컨텍스트에 올리지 않는 락 키 산정용) */
+    @Query("select distinct i.saleProductId from OrderItem i where i.orderId = :orderId and i.saleProductId is not null")
+    List<Long> findSaleProductIds(@Param("orderId") Long orderId);
+
+    /** 주문 항목의 건별 사은품 제품 id (락 키 산정용) */
+    @Query("select distinct i.productId from OrderItem i where i.orderId = :orderId and i.productId is not null")
+    List<Long> findGiftProductIds(@Param("orderId") Long orderId);
+
     /** 주문들의 전체 항목 (재고 전개용). orderIds는 IN 절 크기 단위로 나눠서 넘긴다 */
     List<OrderItem> findByOrderIdIn(Collection<Long> orderIds);
 

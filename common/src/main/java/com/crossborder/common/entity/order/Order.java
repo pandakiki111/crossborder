@@ -31,13 +31,20 @@ public class Order extends BaseAuditEntity {
     @Column(name = "channel_order_no", nullable = false, length = 100, updatable = false)
     private String channelOrderNo;
 
-    /** 조회 스코프용 (멀티브랜드여도 회사는 단일) */
+    /** 조회 스코프용 (한 주문 = 단일 브랜드 → 단일 회사) */
     @Column(name = "company_id", nullable = false, updatable = false)
     private Long companyId;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private OrderStatus status;
+
+    /**
+     * 판매상품 매핑 안 된 유효 항목이 있음. 상태와 독립 (PAID·PARTIAL_CANCELED 필터에 그대로 걸리도록).
+     * true인 동안은 분리·출고 대상 아님.
+     */
+    @Column(name = "mapping_pending", nullable = false)
+    private boolean mappingPending;
 
     @Column(name = "total_item_amount", precision = 12, scale = 2)
     private BigDecimal totalItemAmount;
@@ -76,7 +83,8 @@ public class Order extends BaseAuditEntity {
     private Order(String orderNo, Long salesChannelId, String channelOrderNo, Long companyId,
                   BigDecimal totalItemAmount, BigDecimal paidAmount, String currency,
                   String ordererName, String receiverName, String receiverPhone, String receiverZipcode,
-                  String receiverAddress, String deliveryMemo, String marketMemo, LocalDateTime orderedAt) {
+                  String receiverAddress, String deliveryMemo, String marketMemo, LocalDateTime orderedAt,
+                  boolean mappingPending) {
         this.orderNo = orderNo;
         this.salesChannelId = salesChannelId;
         this.channelOrderNo = channelOrderNo;
@@ -93,10 +101,19 @@ public class Order extends BaseAuditEntity {
         this.marketMemo = marketMemo;
         this.orderedAt = orderedAt;
         this.status = OrderStatus.PAID;
+        this.mappingPending = mappingPending;
     }
 
+    /**
+     * 수취인 정보 수정. 출고지시 이후(SHIPPING·DELIVERED)는 송장·라벨과 어긋나므로 불가.
+     * SHIPPING은 첫 회차 INSTRUCTED 시점에 전이되므로 상태만으로 판정된다.
+     */
     public void changeReceiver(String receiverName, String receiverPhone, String receiverZipcode,
                                String receiverAddress, String deliveryMemo) {
+        if (status == OrderStatus.SHIPPING || status == OrderStatus.DELIVERED) {
+            throw new IllegalStateException(
+                    "출고지시 이후에는 수취인 정보를 수정할 수 없습니다. orderNo=" + orderNo + ", status=" + status);
+        }
         this.receiverName = receiverName;
         this.receiverPhone = receiverPhone;
         this.receiverZipcode = receiverZipcode;
@@ -114,7 +131,20 @@ public class Order extends BaseAuditEntity {
     }
 
     /**
+     * 모든 유효 항목 매핑 완료. 확정 여부(ORDERED 매핑안됨 항목 없음)는 서비스 책임. 상태는 바뀌지 않는다.
+     * <p>
+     * 매핑안됨 항목 자체를 취소해서 남은 매핑안됨 항목이 없어진 경우에도 취소 처리 측에서 호출해야 한다.
+     */
+    public void completeMapping() {
+        if (!mappingPending) {
+            throw new IllegalStateException("매핑안됨 주문이 아닙니다. orderNo=" + orderNo);
+        }
+        this.mappingPending = false;
+    }
+
+    /**
      * 일부 항목 취소 반영. SHIPPING 주문도 CREATED 회차 항목은 취소할 수 있으므로 허용하고 상태는 유지한다.
+     * 매핑안됨 주문도 같은 규칙 (PAID → PARTIAL_CANCELED).
      * <p>
      * 취소 대상 항목이 INSTRUCTED 이후 회차에 물려 있지 않은지는 서비스 책임.
      */
@@ -137,9 +167,12 @@ public class Order extends BaseAuditEntity {
     }
 
     /**
-     * 첫 회차 INSTRUCTED 시점에 호출. 이미 SHIPPING이면 무시.
+     * 첫 회차 INSTRUCTED 시점에 호출. 이미 SHIPPING이면 무시. 매핑안됨 주문은 회차가 없으므로 불가.
      */
     public void startShipping() {
+        if (mappingPending) {
+            throw invalidTransition("출고시작(매핑안됨)");
+        }
         switch (status) {
             case PAID, PARTIAL_CANCELED -> this.status = OrderStatus.SHIPPING;
             case SHIPPING -> { }

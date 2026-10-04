@@ -28,7 +28,7 @@ public class OrderItem extends BaseAuditEntity {
     @Column(name = "order_id", nullable = false, updatable = false)
     private Long orderId;
 
-    /** 참조 대상에서 주문 시점 복사 */
+    /** 참조 대상에서 주문 시점 복사. 매핑안됨 항목은 수집 시점의 브랜드 (매핑은 이 브랜드 안에서만) */
     @Column(name = "brand_id", nullable = false, updatable = false)
     private Long brandId;
 
@@ -36,11 +36,20 @@ public class OrderItem extends BaseAuditEntity {
     @Column(name = "item_type", nullable = false, length = 20, updatable = false)
     private OrderItemType itemType;
 
-    @Column(name = "sale_product_id", updatable = false)
+    /** 매핑 전 항목은 null (매핑 시 확정) */
+    @Column(name = "sale_product_id")
     private Long saleProductId;
 
     @Column(name = "product_id", updatable = false)
     private Long productId;
+
+    /** 채널 상품코드 (마켓 수신값). 채널 수신 항목만 */
+    @Column(name = "channel_product_code", length = 100, updatable = false)
+    private String channelProductCode;
+
+    /** 채널 옵션코드 (마켓 수신값, 옵션 없음 = '') */
+    @Column(name = "channel_option_code", length = 30, updatable = false)
+    private String channelOptionCode;
 
     @Column(nullable = false)
     private int quantity;
@@ -54,6 +63,7 @@ public class OrderItem extends BaseAuditEntity {
     private OrderItemStatus status;
 
     private OrderItem(Long orderId, Long brandId, OrderItemType itemType, Long saleProductId, Long productId,
+                      String channelProductCode, String channelOptionCode,
                       int quantity, BigDecimal unitPrice, OrderItemStatus status) {
         if (quantity <= 0) {
             throw new IllegalArgumentException("주문 수량은 1 이상이어야 합니다. quantity=" + quantity);
@@ -63,6 +73,8 @@ public class OrderItem extends BaseAuditEntity {
         this.itemType = itemType;
         this.saleProductId = saleProductId;
         this.productId = productId;
+        this.channelProductCode = channelProductCode;
+        this.channelOptionCode = channelOptionCode;
         this.quantity = quantity;
         this.unitPrice = unitPrice;
         this.status = status;
@@ -74,7 +86,26 @@ public class OrderItem extends BaseAuditEntity {
     public static OrderItem ofSaleProduct(Long orderId, SaleProduct saleProduct, int quantity, BigDecimal unitPrice) {
         Objects.requireNonNull(saleProduct.getId(), "저장되지 않은 판매상품으로 주문 항목을 만들 수 없습니다.");
         return new OrderItem(orderId, saleProduct.getBrandId(), OrderItemType.SALE_PRODUCT, saleProduct.getId(), null,
-                quantity, unitPrice, OrderItemStatus.ORDERED);
+                null, null, quantity, unitPrice, OrderItemStatus.ORDERED);
+    }
+
+    /**
+     * 채널 수신 항목. 채널 코드는 수신값 그대로 보존한다.
+     *
+     * @param brandId     수집 브랜드 (매핑안됨 항목도 브랜드는 확정)
+     * @param saleProduct 매핑으로 확정된 판매상품 (brandId 소속이어야 함). 매핑이 없으면 null → 매핑안됨 항목
+     */
+    public static OrderItem ofChannelProduct(Long orderId, Long brandId, String channelProductCode,
+                                             String channelOptionCode, SaleProduct saleProduct,
+                                             int quantity, BigDecimal unitPrice) {
+        Objects.requireNonNull(brandId, "브랜드가 없습니다.");
+        Objects.requireNonNull(channelProductCode, "채널 상품코드가 없습니다.");
+        if (saleProduct != null) {
+            requireSameBrand(brandId, saleProduct);
+        }
+        return new OrderItem(orderId, brandId, OrderItemType.SALE_PRODUCT,
+                saleProduct == null ? null : saleProduct.getId(), null,
+                channelProductCode, channelOptionCode, quantity, unitPrice, OrderItemStatus.ORDERED);
     }
 
     /**
@@ -83,7 +114,49 @@ public class OrderItem extends BaseAuditEntity {
     public static OrderItem ofGift(Long orderId, Product product, int quantity) {
         Objects.requireNonNull(product.getId(), "저장되지 않은 제품으로 주문 항목을 만들 수 없습니다.");
         return new OrderItem(orderId, product.getBrandId(), OrderItemType.GIFT_PRODUCT, null, product.getId(),
-                quantity, BigDecimal.ZERO, OrderItemStatus.ORDERED);
+                null, null, quantity, BigDecimal.ZERO, OrderItemStatus.ORDERED);
+    }
+
+    /**
+     * 채널 수신 사은품 항목. 상품 매핑을 거치지 않고 채널 상품코드 = 제품 SKU로 확정된 제품을 받는다.
+     * 단가는 수신값 그대로 저장한다 (통관 신고 시 사은품 가격 처리용).
+     *
+     * @param brandId 수집 브랜드 — 제품도 이 브랜드 소속이어야 한다
+     */
+    public static OrderItem ofChannelGift(Long orderId, Long brandId, String channelProductCode,
+                                          String channelOptionCode, Product product, int quantity,
+                                          BigDecimal unitPrice) {
+        Objects.requireNonNull(product.getId(), "저장되지 않은 제품으로 주문 항목을 만들 수 없습니다.");
+        if (!brandId.equals(product.getBrandId())) {
+            throw new IllegalArgumentException("항목 브랜드와 사은품 제품 브랜드가 다릅니다. brandId=" + brandId
+                    + ", sku=" + product.getSku() + ", productBrandId=" + product.getBrandId());
+        }
+        return new OrderItem(orderId, brandId, OrderItemType.GIFT_PRODUCT, null, product.getId(),
+                channelProductCode, channelOptionCode, quantity, unitPrice, OrderItemStatus.ORDERED);
+    }
+
+    /**
+     * 매핑안됨 항목을 판매상품으로 확정. 항목 브랜드의 판매상품이어야 한다.
+     */
+    public void mapTo(SaleProduct saleProduct) {
+        if (isMapped()) {
+            throw new IllegalStateException("이미 판매상품이 확정된 항목입니다. id=" + getId());
+        }
+        requireSameBrand(brandId, saleProduct);
+        this.saleProductId = saleProduct.getId();
+    }
+
+    private static void requireSameBrand(Long brandId, SaleProduct saleProduct) {
+        Objects.requireNonNull(saleProduct.getId(), "저장되지 않은 판매상품으로 주문 항목을 만들 수 없습니다.");
+        if (!brandId.equals(saleProduct.getBrandId())) {
+            throw new IllegalArgumentException("항목 브랜드와 판매상품 브랜드가 다릅니다. brandId=" + brandId
+                    + ", saleProductId=" + saleProduct.getId() + ", saleProductBrandId=" + saleProduct.getBrandId());
+        }
+    }
+
+    /** 사은품은 항상 확정, 구매 항목은 판매상품이 있어야 확정 */
+    public boolean isMapped() {
+        return isGift() || saleProductId != null;
     }
 
     /**
@@ -113,7 +186,7 @@ public class OrderItem extends BaseAuditEntity {
         }
         this.quantity -= cancelQuantity;
         return new OrderItem(orderId, brandId, itemType, saleProductId, productId,
-                cancelQuantity, unitPrice, OrderItemStatus.CANCELED);
+                channelProductCode, channelOptionCode, cancelQuantity, unitPrice, OrderItemStatus.CANCELED);
     }
 
     public boolean isOrdered() {

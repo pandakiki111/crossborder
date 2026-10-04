@@ -11,8 +11,8 @@
 -- sale_products                 판매상품 = 판매 단위 (마켓 노출 단위)
 --                               단품도 구성 1행짜리 판매상품으로 등록 (판매 경로 단일화)
 -- sale_product_items            판매상품 구성 (제품 N:M + 수량, 구성 고정 사은품 포함)
--- sale_product_channel_mappings 채널별 상품/옵션 코드 매핑
---                               (channel, code, option_code) → 판매상품 1개 확정이
+-- sale_product_channel_mappings 채널별 상품/옵션 코드 매핑 (유효 기간이 있는 이력)
+--                               (channel, brand, code, option_code, ordered_at) → 판매상품 1개 확정이
 --                               주문 수집의 관문. 옵션코드는 채널 종속값이라 여기에만 존재
 -- stock_movements               물리 재고 원장 (append-only, 모든 증감의 근거 기록)
 -- channel_inventory_sync        채널별 재고 전송 상태 (채널×제품당 1행 유지,
@@ -23,6 +23,21 @@
 --  - physical_stock의 모든 증감은 stock_movements에 선기록 (원장이 진실의 원천)
 --  - allocated_stock은 주문 상태에서 유도 (원장 대상 아님, 정합성은 배치 대조)
 --  - 재고 변동 시 관련 채널에 판매가능재고 재전송 (sync 테이블이 상태 추적)
+--
+-- 채널 매핑 (sale_product_channel_mappings)
+--  - 브랜드 단위 키: 브랜드마다 마켓 스토어가 따로라 채널 상품코드가 브랜드 간에 겹칠 수 있다.
+--    brand_id는 판매상품 브랜드의 복사값 (판매상품 브랜드는 불변이라 어긋나지 않음, 서비스 레이어 보장)
+--  - 이력: 주문 수집은 배치라 지연되고, 장애·재수집이면 몇 시간 전 주문이 지금 수집된다.
+--    매핑을 "현재 값" 하나로 두면 늦게 수집된 주문이 그사이 바뀐 판매상품(신 구성)에 붙으므로
+--    유효 기간을 두고 ordered_at이 속한 기간의 매핑을 쓴다 (언제 몇 번 수집해도 결과 불변).
+--  - 판매상품 재지정 = 현재 행 마감(effective_to) + 신규 행 추가, 기존 행을 고치지 않는다.
+--    삭제 = 마감 (그 기간 주문의 재수집에 필요해 행은 남긴다)
+--  - 기간은 반열림 구간 [effective_from, effective_to): 경계 시각 주문이 두 행에 동시에 걸리지 않는다.
+--    전환 시각은 항상 처리 시점(현재)이고 과거로 소급하지 않는다
+--  - 최초 매핑은 effective_from = 1000-01-01(기간 시작 없음): 매핑 전에 들어온 매핑안됨 주문도 확정할 수 있다
+--  - uk_..._period : 같은 시작 시각의 이력 중복 금지
+--    uk_..._current: 현재 유효 행은 키당 최대 1개. current_key는 effective_to가 NULL일 때만 1, 아니면 NULL
+--                    (NULL은 유니크 비교에서 제외) → 동시 재지정으로 현재 행이 둘 생기는 것을 DB가 막는다
 -- =====================================================
 
 CREATE TABLE sales_channels
@@ -118,19 +133,25 @@ CREATE TABLE sale_product_channel_mappings
 (
     id              BIGINT AUTO_INCREMENT PRIMARY KEY,
     sale_product_id BIGINT        NOT NULL COMMENT '매핑할 판매상품',
+    brand_id        BIGINT        NOT NULL COMMENT '판매상품 브랜드 (유니크 키용 복사값)',
     channel_id      BIGINT        NOT NULL COMMENT '판매채널',
-    code            VARCHAR(100)   NOT NULL COMMENT '판매채널에 등록된 상품코드',
+    code            VARCHAR(100)  NOT NULL COMMENT '판매채널에 등록된 상품코드',
     option_code     VARCHAR(30)   NOT NULL DEFAULT '' COMMENT '판매채널에 등록한 옵션코드',
+    effective_from  DATETIME      NOT NULL DEFAULT '1000-01-01 00:00:00' COMMENT '유효 시작 (포함). 1000-01-01이면 기간 시작 없음 (최초 매핑)',
+    effective_to    DATETIME      NULL COMMENT '유효 끝 (미포함). NULL이면 현재 유효',
+    current_key     TINYINT AS (IF(effective_to IS NULL, 1, NULL)) PERSISTENT COMMENT '현재 유효 행 유니크용 (effective_to IS NULL이면 1)',
     created_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_user_id BIGINT        NOT NULL COMMENT '최초 등록자',
     updated_at      DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     updated_user_id BIGINT        NULL COMMENT '마지막 수정자',
-    CONSTRAINT uk_sale_product_channel_mappings_composition UNIQUE (channel_id, code, option_code),
+    CONSTRAINT uk_sale_product_channel_mappings_period UNIQUE (channel_id, brand_id, code, option_code, effective_from),
+    CONSTRAINT uk_sale_product_channel_mappings_current UNIQUE (channel_id, brand_id, code, option_code, current_key),
     CONSTRAINT fk_sale_product_channel_mappings_sale_products FOREIGN KEY (sale_product_id) REFERENCES sale_products (id),
+    CONSTRAINT fk_sale_product_channel_mappings_brand FOREIGN KEY (brand_id) REFERENCES brands (id),
     CONSTRAINT fk_sale_product_channel_mappings_channels FOREIGN KEY (channel_id) REFERENCES sales_channels (id),
     CONSTRAINT fk_sale_product_channel_mappings_created_user FOREIGN KEY (created_user_id) REFERENCES users (id),
     CONSTRAINT fk_sale_product_channel_mappings_updated_user FOREIGN KEY (updated_user_id) REFERENCES users (id)
-) COMMENT '판매상품-채널 코드 매핑';
+) COMMENT '판매상품-채널 코드 매핑 (유효 기간 이력)';
 
 CREATE TABLE stock_movements
 (

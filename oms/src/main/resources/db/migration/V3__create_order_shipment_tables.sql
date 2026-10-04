@@ -2,7 +2,7 @@
 -- V3: 주문/출고 도메인
 --
 -- orders                주문 (마켓 1주문 = 1행 불변, 분리해도 쪼개지 않음)
--- order_items           주문 항목 (이형 참조: 판매상품 / 건별 사은품, 브랜드 스코프)
+-- order_items           주문 항목 (이형 참조: 판매상품 / 건별 사은품, 브랜드 스코프. 매핑안됨 항목은 채널 수신 코드 보존)
 -- shipments             출고 회차 (분리·출고지시의 단위, CREATED는 지시 전 대기)
 -- shipment_items        회차별 출고 항목 (어느 주문 항목 몇 개가 이 회차인지)
 -- order_status_history  주문/출고 상태 변경 통합 이력 (append-only)
@@ -16,6 +16,15 @@
 --  - 주문 전체 취소는 모든 회차가 CREATED/CANCELED일 때만 (= PAID / PARTIAL_CANCELED)
 --  - 사은품(GIFT_PRODUCT) 항목은 수량 부분취소 없이 전체 취소만
 --  - 취소 시 CREATED 회차에서 항목 제거, 빈 회차는 CANCELED 처리
+--
+-- 매핑안됨 (판매상품 미확정 항목)
+--  - 채널 상품코드에 (그 브랜드의) 매핑이 없어도 주문은 받는다. 해당 항목은 sale_product_id 없이
+--    channel_product_code/option_code(채널 수신값)로 저장하고 주문은 mapping_pending = TRUE.
+--  - mapping_pending은 status와 독립: 매핑안됨이어도 결제완료·부분취소는 status에 그대로 반영되어
+--    PAID·PARTIAL_CANCELED 필터에 걸린다.
+--  - 매핑 등록 후 ordered_at 구간 매핑으로 항목을 확정하고, 남은 유효 매핑안됨 항목이 없으면 FALSE로 내린다.
+--  - 브랜드는 수집 시점에 안다(엑셀 시딩은 업로드 시 지정, 수집은 스토어 계정 기준) → 매핑안됨 항목도 brand_id 보유.
+--  - mapping_pending 주문은 분리·출고지시 대상 아님
 -- =====================================================
 
 CREATE TABLE orders
@@ -26,6 +35,7 @@ CREATE TABLE orders
     channel_order_no  VARCHAR(100)  NOT NULL COMMENT '마켓측 주문번호',
     company_id        BIGINT        NOT NULL COMMENT '조회 스코프용 (멀티브랜드여도 회사는 단일)',
     status            VARCHAR(20)   NOT NULL DEFAULT 'PAID' COMMENT 'PAID / PARTIAL_CANCELED / CANCELED / SHIPPING / DELIVERED',
+    mapping_pending   BOOLEAN       NOT NULL DEFAULT FALSE COMMENT '매핑안됨 유효 항목 있음 (분리·출고 불가)',
     total_item_amount DECIMAL(12,2) NULL COMMENT '상품금액 합계 (마켓 수신값)',
     paid_amount       DECIMAL(12,2) NULL COMMENT '실결제금액 (마켓 수신값, 할인·포인트 반영)',
     currency          CHAR(3)       NULL COMMENT 'ISO 통화 (JPY)',
@@ -46,7 +56,8 @@ CREATE TABLE orders
     CONSTRAINT fk_orders_sales_channel FOREIGN KEY (sales_channel_id) REFERENCES sales_channels (id),
     CONSTRAINT fk_orders_company FOREIGN KEY (company_id) REFERENCES companies (id),
     CONSTRAINT fk_orders_created_user FOREIGN KEY (created_user_id) REFERENCES users (id),
-    CONSTRAINT fk_orders_updated_user FOREIGN KEY (updated_user_id) REFERENCES users (id)
+    CONSTRAINT fk_orders_updated_user FOREIGN KEY (updated_user_id) REFERENCES users (id),
+    INDEX idx_orders_mapping_pending (mapping_pending, ordered_at)
 ) COMMENT '주문 (uk_orders_channel_order가 수집·엑셀 시딩 멱등성 키)';
 
 CREATE TABLE order_items
@@ -57,6 +68,8 @@ CREATE TABLE order_items
     item_type       VARCHAR(20)   NOT NULL COMMENT 'SALE_PRODUCT(구매) / GIFT_PRODUCT(건별 사은품)',
     sale_product_id BIGINT        NULL COMMENT 'item_type=SALE_PRODUCT일 때',
     product_id      BIGINT        NULL COMMENT 'item_type=GIFT_PRODUCT일 때',
+    channel_product_code VARCHAR(100) NULL COMMENT '채널 상품코드 (마켓 수신값)',
+    channel_option_code  VARCHAR(30)  NULL COMMENT '채널 옵션코드 (마켓 수신값, 옵션 없음 = 빈 문자열)',
     quantity        INT           NOT NULL COMMENT '수량',
     unit_price      DECIMAL(12,2) NOT NULL DEFAULT 0 COMMENT '주문 시점 단가 스냅샷 (사은품은 0)',
     status          VARCHAR(20)   NOT NULL DEFAULT 'ORDERED' COMMENT 'ORDERED / CANCELED (부분취소 단위)',
@@ -71,9 +84,11 @@ CREATE TABLE order_items
     CONSTRAINT fk_order_items_created_user FOREIGN KEY (created_user_id) REFERENCES users (id),
     CONSTRAINT fk_order_items_updated_user FOREIGN KEY (updated_user_id) REFERENCES users (id),
     CONSTRAINT chk_order_items_type_ref CHECK (
-        (item_type = 'SALE_PRODUCT' AND sale_product_id IS NOT NULL AND product_id IS NULL) OR
+        (item_type = 'SALE_PRODUCT' AND product_id IS NULL AND
+         (sale_product_id IS NOT NULL OR channel_product_code IS NOT NULL)) OR
         (item_type = 'GIFT_PRODUCT' AND product_id IS NOT NULL AND sale_product_id IS NULL)
-        )
+        ),
+    INDEX idx_order_items_channel_code (channel_product_code, channel_option_code)
 ) COMMENT '주문 항목 (수량 부분취소는 행 분할로 처리)';
 
 CREATE TABLE shipments

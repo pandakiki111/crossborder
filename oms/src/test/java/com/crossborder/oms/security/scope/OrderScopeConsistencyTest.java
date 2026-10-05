@@ -6,11 +6,11 @@ import com.crossborder.common.entity.organization.UserRole;
 import com.crossborder.infra.jpa.EntityScanConfig;
 import com.crossborder.infra.jpa.JpaAuditingConfig;
 import com.crossborder.infra.jpa.QuerydslConfig;
-import com.crossborder.oms.dto.order.OrderSearchCondition;
-import com.crossborder.oms.dto.order.OrderSummaryResponse;
 import com.crossborder.oms.exception.ForbiddenException;
 import com.crossborder.oms.repository.OrderQueryRepository;
+import com.crossborder.oms.repository.OrderSearchCriteria;
 import com.crossborder.oms.security.AuthenticatedUser;
+import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -23,7 +23,6 @@ import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabas
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Import;
-import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.testcontainers.containers.MariaDBContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -46,8 +45,12 @@ class OrderScopeConsistencyTest {
     @ServiceConnection
     static MariaDBContainer<?> mariadb = new MariaDBContainer<>("mariadb:11.4");
 
-    private static final OrderSearchCondition NO_FILTER =
-            new OrderSearchCondition(null, null, null, null, null, null, null, null);
+    /**
+     * 조건은 테스트 주문번호뿐 (같은 DB에 다른 테스트가 넣은 주문 제외). 테스트 주문은 NOW()로 들어가므로 기간은 앞뒤 하루.
+     */
+    private static final OrderSearchCriteria TEST_ORDERS = new OrderSearchCriteria(
+            LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(1), List.of(), null, null, null,
+            List.of(), false, null, List.of("T-A1", "T-A1A2", "T-B1"), null, null);
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -90,8 +93,12 @@ class OrderScopeConsistencyTest {
                 user(UserRole.BRAND_STAFF, companyB, brandB1));
 
         for (AuthenticatedUser user : users) {
-            assertThat(listed(user)).as("role=%s company=%s brand=%s", user.role(), user.companyId(), user.brandId())
-                    .isEqualTo(accessible(user));
+            Set<Long> accessible = accessible(user);
+            assertThat(listed(user)).as("목록 role=%s company=%s brand=%s", user.role(), user.companyId(), user.brandId())
+                    .isEqualTo(accessible);
+            // 건수는 브랜드 스코프를 목록(프로브)과 다른 형태(EXISTS)로 센다 — 같은 주문을 세는지 확인
+            assertThat(counted(user)).as("건수 role=%s company=%s brand=%s", user.role(), user.companyId(), user.brandId())
+                    .isEqualTo(accessible.size());
         }
     }
 
@@ -120,12 +127,15 @@ class OrderScopeConsistencyTest {
     }
 
     private Set<Long> listed(AuthenticatedUser user) {
-        Set<Long> testOrders = Set.of(orderA1, orderA1A2, orderB1);
-        return orderQueryRepository.search(NO_FILTER, PageRequest.of(0, 100), user).getContent().stream()
-                .map(OrderSummaryResponse::orderId)
-                .filter(testOrders::contains)
+        return orderQueryRepository.findPage(TEST_ORDERS, user, 0, 100).stream()
+                .map(OrderQueryRepository.Row::orderId)
                 .collect(Collectors.toSet());
     }
+
+    private int counted(AuthenticatedUser user) {
+        return orderQueryRepository.countUpTo(TEST_ORDERS, user, 100);
+    }
+
 
     private long order(String channelOrderNo, long companyId, long... itemBrandIds) {
         long orderId = insert("""

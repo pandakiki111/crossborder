@@ -1,6 +1,6 @@
 package com.crossborder.oms.controller;
 
-import com.crossborder.oms.dto.PageResponse;
+import com.crossborder.oms.dto.CappedPageResponse;
 import com.crossborder.oms.dto.order.OrderDetailResponse;
 import com.crossborder.oms.dto.order.OrderSearchCondition;
 import com.crossborder.oms.dto.order.OrderSummaryResponse;
@@ -16,6 +16,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -34,15 +35,29 @@ public class OrderController {
     }
 
     /**
-     * 주문 목록. 예: GET /api/orders?status=PAID&mappingPending=true&orderedFrom=2026-10-01&page=0&size=20
-     * 정렬은 주문일시 최신순 고정 (sort 파라미터 무시).
+     * 주문 목록. 예: GET /api/orders?status=PAID&status=PARTIAL_CANCELED&shipmentStatus=CREATED&unsplit=true
+     * &orderedFrom=2026-10-01&orderedTo=2026-10-05&page=0&size=20
+     * 정렬은 주문일시 최신순 고정 (sort 파라미터 무시). 건수는 상한까지만 (totalCapped면 "10,000+").
+     * 제약 위반(페이지 크기·offset·기간·부분 일치 기간·주문번호 개수)은 400.
      */
     @GetMapping
-    public PageResponse<OrderSummaryResponse> search(
+    public CappedPageResponse<OrderSummaryResponse> search(
             @ModelAttribute OrderSearchCondition condition,
             @PageableDefault(size = 20) Pageable pageable,
             @AuthenticationPrincipal AuthenticatedUser user) {
-        return PageResponse.from(orderQueryService.search(condition, pageable, user));
+        return orderQueryService.search(condition, pageable, user);
+    }
+
+    /**
+     * 같은 검색을 본문으로 받는다 (페이지는 쿼리 파라미터). 주문번호 복수 검색(최대 500개, 엑셀 붙여넣기)은
+     * 쿼리 문자열이 요청 헤더 한도(Tomcat 기본 8KB)를 넘으므로 이쪽을 쓴다.
+     */
+    @PostMapping("/search")
+    public CappedPageResponse<OrderSummaryResponse> searchByBody(
+            @RequestBody OrderSearchCondition condition,
+            @PageableDefault(size = 20) Pageable pageable,
+            @AuthenticationPrincipal AuthenticatedUser user) {
+        return orderQueryService.search(condition, pageable, user);
     }
 
     @GetMapping("/{orderId}")

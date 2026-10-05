@@ -9,9 +9,11 @@ import com.crossborder.common.entity.organization.UserRole;
 import com.crossborder.infra.jwt.JwtTokenProvider;
 import com.crossborder.infra.jwt.TokenPayload;
 import com.crossborder.oms.controller.OrderController;
+import com.crossborder.oms.dto.CappedPageResponse;
 import com.crossborder.oms.exception.GlobalExceptionHandler;
 import com.crossborder.oms.service.order.OrderQueryService;
 import com.crossborder.oms.service.order.OrderReceiverService;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
@@ -19,7 +21,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
-import org.springframework.data.domain.Page;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -61,7 +62,8 @@ class SecurityConfigTest {
     @ParameterizedTest
     @EnumSource(value = UserRole.class, names = {"ADMIN", "COMPANY_STAFF", "BRAND_STAFF"})
     void 관리자군은_통과(UserRole role) throws Exception {
-        given(orderQueryService.search(any(), any(), any())).willReturn(Page.empty());
+        given(orderQueryService.search(any(), any(), any()))
+                .willReturn(new CappedPageResponse<>(List.of(), 0, 20, 0, false));
 
         mockMvc.perform(get("/api/orders").header("Authorization", "Bearer " + token(role)))
                 .andExpect(status().isOk());

@@ -22,4 +22,12 @@ public interface DistributedLockManager {
      * @throws IllegalStateException 트랜잭션 동기화가 활성화되지 않은 곳에서 호출
      */
     void lockUntilTransactionEnd(Collection<String> keys);
+
+    /**
+     * 기다리지 않고 key를 잠가 action을 실행한다. 이미 잠겨 있으면 즉시 {@link LockAcquisitionException}.
+     * 작업 시간을 예측할 수 없는 긴 작업(대량 다운로드 등)의 중복 실행 방지용이라 임대 시간을 두지 않는다 —
+     * 보유 중에는 자동 연장되고, 보유 프로세스가 죽으면 연장이 끊겨 잠시 뒤 풀린다.
+     * 잠근 스레드에서 해제해야 하므로 action은 같은 스레드에서 끝나야 한다.
+     */
+    <T> T executeIfAvailable(String key, Supplier<T> action);
 }

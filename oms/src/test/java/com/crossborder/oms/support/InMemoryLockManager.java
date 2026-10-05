@@ -1,6 +1,7 @@
 package com.crossborder.oms.support;
 
 import com.crossborder.infra.lock.DistributedLockManager;
+import com.crossborder.infra.lock.LockAcquisitionException;
 import java.util.Collection;
 import java.util.List;
 import java.util.TreeSet;
@@ -36,6 +37,19 @@ public class InMemoryLockManager implements DistributedLockManager {
                 acquired.forEach(ReentrantLock::unlock);
             }
         });
+    }
+
+    @Override
+    public <T> T executeIfAvailable(String key, Supplier<T> action) {
+        ReentrantLock lock = locks.computeIfAbsent(key, k -> new ReentrantLock());
+        if (!lock.tryLock()) {
+            throw new LockAcquisitionException(List.of(key), "이미 실행 중입니다. key=" + key);
+        }
+        try {
+            return action.get();
+        } finally {
+            lock.unlock();
+        }
     }
 
     private List<ReentrantLock> acquire(Collection<String> keys) {

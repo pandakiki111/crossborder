@@ -57,6 +57,27 @@ class RedissonDistributedLockManager implements DistributedLockManager {
         });
     }
 
+    @Override
+    public <T> T executeIfAvailable(String key, Supplier<T> action) {
+        RLock lock = redissonClient.getLock(key);
+        boolean acquired;
+        try {
+            // leaseTime -1 = watchdog 자동 연장 (lockWatchdogTimeout, 기본 30s 주기)
+            acquired = lock.tryLock(0, -1, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new LockAcquisitionException(List.of(key), "락 대기 중 인터럽트. key=" + key, e);
+        }
+        if (!acquired) {
+            throw new LockAcquisitionException(List.of(key), "이미 실행 중입니다. key=" + key);
+        }
+        try {
+            return action.get();
+        } finally {
+            release(lock, List.of(key));
+        }
+    }
+
     private RLock acquire(Collection<String> keys) {
         List<String> sorted = List.copyOf(new TreeSet<>(keys));
         RLock lock = sorted.size() == 1

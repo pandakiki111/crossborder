@@ -159,7 +159,8 @@ public class OrderQueryRepository {
         return new SkuFilter(saleProductIds, productIds, items > sparseItemThreshold);
     }
 
-    private static BooleanExpression[] conditions(OrderSearchCriteria c, AuthenticatedUser user, Usage usage) {
+    /** 목록·다운로드 공용 (OrderDownloadRepository) */
+    static BooleanExpression[] conditions(OrderSearchCriteria c, AuthenticatedUser user, Usage usage) {
         List<BooleanExpression> conditions = new ArrayList<>();
         conditions.add(scope(user, usage));
         conditions.add(order.orderedAt.goe(c.orderedFrom()));

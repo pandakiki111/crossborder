@@ -3,18 +3,27 @@ package com.crossborder.oms.service.order.download;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.crossborder.common.entity.gift.GiftConditionMode;
+import com.crossborder.common.entity.gift.GiftGrantType;
+import com.crossborder.common.entity.gift.GiftQuantityMode;
+import com.crossborder.common.entity.gift.GiftTimeBasis;
 import com.crossborder.common.entity.order.OrderStatus;
 import com.crossborder.common.entity.organization.UserRole;
+import com.crossborder.oms.dto.gift.GiftEventRequest;
+import com.crossborder.oms.dto.order.GiftAddRequest;
 import com.crossborder.oms.dto.order.OrderDownloadEstimate;
-import com.crossborder.oms.dto.order.OrderSearchCondition;
 import com.crossborder.oms.dto.order.OrderSearchCondition.SkuMatch;
+import com.crossborder.oms.dto.order.OrderSearchCondition;
 import com.crossborder.oms.dto.order.OrderSummaryResponse;
 import com.crossborder.oms.exception.ConflictException;
 import com.crossborder.oms.exception.InvalidRequestException;
 import com.crossborder.oms.security.AuthenticatedUser;
+import com.crossborder.oms.service.gift.GiftEventApplier;
+import com.crossborder.oms.service.gift.GiftEventService;
+import com.crossborder.oms.service.order.OrderGiftService;
 import com.crossborder.oms.service.order.OrderQueryService;
-import com.crossborder.oms.service.order.OrderRegistrationCommand;
 import com.crossborder.oms.service.order.OrderRegistrationCommand.Item;
+import com.crossborder.oms.service.order.OrderRegistrationCommand;
 import com.crossborder.oms.service.order.OrderRegistrationService;
 import com.crossborder.oms.support.IntegrationTestBase;
 import java.io.ByteArrayInputStream;
@@ -62,6 +71,12 @@ class OrderDownloadTest extends IntegrationTestBase {
     private OrderQueryService queryService;
     @Autowired
     private OrderRegistrationService registrationService;
+    @Autowired
+    private GiftEventService giftEventService;
+    @Autowired
+    private GiftEventApplier giftEventApplier;
+    @Autowired
+    private OrderGiftService orderGiftService;
 
     private long qoo10;
     private long companyId;
@@ -124,8 +139,31 @@ class OrderDownloadTest extends IntegrationTestBase {
         assertThat(file.rows()).containsExactly(
                 List.of(file.orderNo(0), "QOO10", set, "CODE", "2", "DL-TONER-" + suffix, "2", "N", ""),
                 List.of(file.orderNo(0), "QOO10", set, "CODE", "2", "DL-MASK-" + suffix, "2", "Y", "COMPOSITION"),
-                List.of(file.orderNo(0), "QOO10", "", "GIFT", "1", "DL-MASK-" + suffix, "1", "Y", "ORDER"),
+                List.of(file.orderNo(0), "QOO10", "", "GIFT", "1", "DL-MASK-" + suffix, "1", "Y", "COLLECTED"),
                 List.of(file.orderNo(0), "QOO10", "", "UNKNOWN", "1", "", "", "N", ""));
+    }
+
+    @Test
+    void 사은품출처는_구성_수신_이벤트_수동을_구분하고_이벤트_행엔_코드와_이벤트명이_나온다() {
+        AuthenticatedUser admin = new AuthenticatedUser(1L, UserRole.ADMIN, null, null);
+        login(admin);
+        long orderId = order("SOURCE", brandA, AT, sale(tonerSet, 1), gift(mask, 1));
+        giftEventService.create(new GiftEventRequest(brandA, "가을 증정-" + suffix, GiftTimeBasis.ORDERED,
+                DAY.atStartOfDay(), DAY.plusDays(1).atStartOfDay(), null, null, GiftConditionMode.ALL,
+                GiftGrantType.ALWAYS, GiftQuantityMode.FIXED, 1, null, null, null, List.of(),
+                List.of(new GiftEventRequest.Item(toner, null, null))), admin);
+        giftEventApplier.apply(List.of(orderId));
+        orderGiftService.addGift(orderId, new GiftAddRequest(mask, 2), admin);
+
+        Downloaded file = download(condition(null, null, null, null), List.of("SKU", "GIFT_SOURCE", "GIFT_EVENT"));
+        String code = jdbc.queryForObject("SELECT code FROM gift_events WHERE name = ?", String.class, "가을 증정-" + suffix);
+
+        assertThat(file.rows()).extracting(row -> row.subList(2, 5)).containsExactly(
+                List.of("DL-TONER-" + suffix, "", ""),
+                List.of("DL-MASK-" + suffix, "COMPOSITION", ""),
+                List.of("DL-MASK-" + suffix, "COLLECTED", ""),
+                List.of("DL-TONER-" + suffix, "EVENT", "[" + code + "] 가을 증정-" + suffix),
+                List.of("DL-MASK-" + suffix, "MANUAL", ""));
     }
 
     @Test

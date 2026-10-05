@@ -3,14 +3,21 @@ package com.crossborder.oms.service.order.seed;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.crossborder.common.entity.gift.GiftConditionMode;
+import com.crossborder.common.entity.gift.GiftGrantType;
+import com.crossborder.common.entity.gift.GiftQuantityMode;
+import com.crossborder.common.entity.gift.GiftTimeBasis;
 import com.crossborder.common.entity.organization.UserRole;
+import com.crossborder.oms.dto.gift.GiftEventRequest;
 import com.crossborder.oms.security.AuthenticatedUser;
+import com.crossborder.oms.service.gift.GiftEventService;
 import com.crossborder.oms.support.IntegrationTestBase;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
@@ -41,6 +48,8 @@ class OrderSeedServiceTest extends IntegrationTestBase {
 
     @Autowired
     private OrderSeedService orderSeedService;
+    @Autowired
+    private GiftEventService giftEventService;
 
     private long brandId;
     private long toner;
@@ -195,6 +204,35 @@ class OrderSeedServiceTest extends IntegrationTestBase {
         assertThat(seedTempFiles(tmp)).isEqualTo(before);
     }
 
+    @Test
+    void 사은품_이벤트는_applyGiftEvents가_true일_때만_등록_주문에_증정하고_건수를_싣는다() {
+        long gift = product(brandId, "SEED-GIFT");
+        giftEventService.create(new GiftEventRequest(brandId, "시딩 이벤트", GiftTimeBasis.ORDERED,
+                LocalDateTime.of(2026, 10, 1, 0, 0), LocalDateTime.of(2026, 10, 2, 0, 0), null, null,
+                GiftConditionMode.ALL, GiftGrantType.ALWAYS, GiftQuantityMode.FIXED, 1, null, null, null, List.of(),
+                List.of(new GiftEventRequest.Item(gift, null, null))), ADMIN);
+
+        Upload off = upload(sheet(row("GA", setCode, "N", 1)), false);
+        assertThat(off.result().giftGrants()).isZero();
+        assertThat(eventGiftCount("GA")).isZero();
+
+        Upload on = upload(sheet(row("GB", setCode, "N", 1), row("GC", "Q-NONE-" + suffix, "N", 1)), true);
+        assertThat(on.result().giftGrants()).as("매핑안됨 GC도 미루지 않고 판정 (상품 조건 없는 이벤트)").isEqualTo(2);
+        assertThat(on.result().giftFailedCount()).isZero();
+        assertThat(eventGiftCount("GB")).isEqualTo(1);
+        assertThat(eventGiftCount("GC")).isEqualTo(1);
+        assertThat(on.messages().get(1)).startsWith("성공: ").doesNotContain(OrderSeedService.GIFT_FAILED);
+    }
+
+    @Test
+    void 결제일시는_비우면_주문일시로_저장된다() {
+        upload(sheet(row("PA", setCode, "N", 1),
+                rowWith("PB", setCode, Map.of(OrderSeedColumn.PAID_AT, "2026-10-01 11:30:00"))));
+
+        assertThat(paidAt("PA")).isEqualTo(LocalDateTime.of(2026, 10, 1, 10, 0));
+        assertThat(paidAt("PB")).isEqualTo(LocalDateTime.of(2026, 10, 1, 11, 30));
+    }
+
     private static long seedTempFiles(Path dir) throws IOException {
         try (var files = Files.list(dir)) {
             return files.filter(f -> f.getFileName().toString().startsWith("order-seed-")).count();
@@ -208,7 +246,12 @@ class OrderSeedServiceTest extends IntegrationTestBase {
 
     /** 결과 파일을 읽어 행 인덱스 → 처리결과 문자열 */
     Upload upload(Sheet input) {
-        OrderSeedResult result = orderSeedService.seed(new ByteArrayInputStream(bytes(input.getWorkbook())), brandId);
+        return upload(input, false);
+    }
+
+    Upload upload(Sheet input, boolean applyGiftEvents) {
+        OrderSeedResult result = orderSeedService.seed(new ByteArrayInputStream(bytes(input.getWorkbook())), brandId,
+                applyGiftEvents);
         try (Workbook out = new XSSFWorkbook(new ByteArrayInputStream(result.file()))) {
             Sheet sheet = out.getSheetAt(0);
             DataFormatter formatter = new DataFormatter();
@@ -285,6 +328,18 @@ class OrderSeedServiceTest extends IntegrationTestBase {
         return jdbc.queryForObject("""
                 SELECT COUNT(*) FROM order_items i JOIN orders o ON o.id = i.order_id WHERE o.channel_order_no = ?
                 """, Integer.class, suffix + "-" + order);
+    }
+
+    int eventGiftCount(String order) {
+        return jdbc.queryForObject("""
+                SELECT COUNT(*) FROM order_items i JOIN orders o ON o.id = i.order_id
+                WHERE o.channel_order_no = ? AND i.gift_source = 'EVENT'
+                """, Integer.class, suffix + "-" + order);
+    }
+
+    LocalDateTime paidAt(String order) {
+        return jdbc.queryForObject("SELECT paid_at FROM orders WHERE channel_order_no = ?", LocalDateTime.class,
+                suffix + "-" + order);
     }
 
     int orderCount(String order) {

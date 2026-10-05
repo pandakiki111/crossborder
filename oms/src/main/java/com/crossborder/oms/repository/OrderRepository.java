@@ -28,4 +28,8 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     @Query("select o.channelOrderNo from Order o where o.salesChannelId = :channelId and o.channelOrderNo in :channelOrderNos")
     List<String> findExistingChannelOrderNos(@Param("channelId") Long channelId,
                                              @Param("channelOrderNos") Collection<String> channelOrderNos);
+
+    /** 주문번호 → id (등록 직후 후속 처리용). [id, orderNo] */
+    @Query("select o.id, o.orderNo from Order o where o.orderNo in :orderNos")
+    List<Object[]> findIdsByOrderNoIn(@Param("orderNos") Collection<String> orderNos);
 }

@@ -153,7 +153,7 @@ final class OrderSeedTemplateWriter {
     static int columnWidth(OrderSeedColumn column) {
         return switch (column) {
             case RECEIVER_ADDRESS -> 40;
-            case DELIVERY_MEMO, ORDERED_AT, CHANNEL_ORDER_NO -> 22;
+            case DELIVERY_MEMO, ORDERED_AT, PAID_AT, CHANNEL_ORDER_NO -> 22;
             case CHANNEL_PRODUCT_CODE, RECEIVER_PHONE, ORDERER_NAME, RECEIVER_NAME -> 16;
             default -> 12;
         };

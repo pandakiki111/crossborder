@@ -47,14 +47,14 @@ class OrderBatchWriter {
             INSERT INTO orders (order_no, sales_channel_id, channel_order_no, company_id, status,
                                 mapping_pending, allocated_at, total_item_amount, paid_amount, currency, orderer_name,
                                 receiver_name, receiver_phone, receiver_zipcode, receiver_address, delivery_memo, market_memo,
-                                ordered_at, created_at, created_user_id, updated_at, updated_user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ordered_at, paid_at, created_at, created_user_id, updated_at, updated_user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
     private static final String INSERT_ITEM = """
-            INSERT INTO order_items (order_id, brand_id, item_type, sale_product_id, product_id,
-                                     channel_product_code, channel_option_code, quantity, unit_price, status,
-                                     created_at, created_user_id, updated_at, updated_user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO order_items (order_id, brand_id, item_type, sale_product_id, product_id, gift_source,
+                                     gift_event_id, channel_product_code, channel_option_code, quantity, unit_price,
+                                     status, created_at, created_user_id, updated_at, updated_user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """;
     private static final String INSERT_HISTORY = """
             INSERT INTO order_status_history (order_id, target_type, target_id, previous_status, current_status,
@@ -143,11 +143,12 @@ class OrderBatchWriter {
                 o.getStatus().name(), o.isMappingPending(), draft.allocates() ? now : null,
                 o.getTotalItemAmount(), o.getPaidAmount(), o.getCurrency(), o.getOrdererName(),
                 o.getReceiverName(), o.getReceiverPhone(), o.getReceiverZipcode(), o.getReceiverAddress(),
-                o.getDeliveryMemo(), o.getMarketMemo(), o.getOrderedAt(), now, userId, now, userId};
+                o.getDeliveryMemo(), o.getMarketMemo(), o.getOrderedAt(), o.getPaidAt(), now, userId, now, userId};
     }
 
     private static Object[] itemRow(Long orderId, OrderItem i, LocalDateTime now, Long userId) {
         return new Object[]{orderId, i.getBrandId(), i.getItemType().name(), i.getSaleProductId(), i.getProductId(),
+                i.getGiftSource() == null ? null : i.getGiftSource().name(), i.getGiftEventId(),
                 i.getChannelProductCode(), i.getChannelOptionCode(), i.getQuantity(), i.getUnitPrice(),
                 i.getStatus().name(), now, userId, now, userId};
     }

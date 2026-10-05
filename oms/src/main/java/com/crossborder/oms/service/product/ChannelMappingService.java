@@ -99,12 +99,12 @@ public class ChannelMappingService {
         boolean sameKey = code.equals(current.getCode()) && optionCode.equals(current.getOptionCode());
         if (sameKey) {
             if (current.getSaleProductId().equals(saleProduct.getId())) {
-                return new ChannelMappingChangeResponse(current.getId(), 0, 0);
+                return ChannelMappingChangeResponse.of(current.getId(), 0, 0);
             }
             SaleProductChannelMapping next = current.renew(saleProduct, now);
             // 마감(UPDATE)을 신규(INSERT)보다 먼저 반영 — Hibernate는 INSERT를 먼저 내보내 현재 행 유니크에 걸린다
             mappingRepository.flush();
-            return new ChannelMappingChangeResponse(mappingRepository.save(next).getId(), 0, 0);
+            return ChannelMappingChangeResponse.of(mappingRepository.save(next).getId(), 0, 0);
         }
 
         current.close(now);
@@ -136,7 +136,7 @@ public class ChannelMappingService {
                 SaleProductChannelMapping.create(saleProduct, channelId, code, optionCode, effectiveFrom));
         OrderMappingService.Result resolved =
                 orderMappingService.resolveUnmappedItems(channelId, brandId, code, optionCode);
-        return new ChannelMappingChangeResponse(mapping.getId(), resolved.mappedItemCount(),
+        return ChannelMappingChangeResponse.of(mapping.getId(), resolved.mappedItemCount(),
                 resolved.completedOrderCount());
     }
 

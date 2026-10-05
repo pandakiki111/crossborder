@@ -7,11 +7,13 @@ import com.crossborder.oms.exception.ForbiddenException;
 import com.crossborder.oms.exception.InvalidRequestException;
 import com.crossborder.oms.exception.NotFoundException;
 import com.crossborder.oms.repository.BrandRepository;
+import com.crossborder.oms.repository.OrderRepository;
 import com.crossborder.oms.repository.ProductRepository;
 import com.crossborder.oms.repository.SalesChannelRepository;
 import com.crossborder.oms.security.scope.ScopeCheck;
 import com.crossborder.oms.security.scope.ScopeId;
 import com.crossborder.oms.security.scope.ScopeTarget;
+import com.crossborder.oms.service.gift.GiftEventApplier;
 import com.crossborder.oms.service.order.OrderRegistrationCommand;
 import com.crossborder.oms.service.order.OrderRegistrationResult;
 import com.crossborder.oms.service.order.OrderRegistrationService;
@@ -78,24 +80,30 @@ public class OrderSeedService {
     static final String DEFAULT_CURRENCY = "JPY";
     static final String SIBLING_FAILED = "동일 주문 내 다른 행 오류로 미처리";
     static final String SKIPPED = "이미 등록된 주문";
+    static final String GIFT_FAILED = "사은품 이벤트 증정 실패 (주문은 등록됨, 재평가 필요)";
 
     private final SalesChannelRepository salesChannelRepository;
     private final BrandRepository brandRepository;
     private final ProductRepository productRepository;
     private final ChannelProductResolver channelProductResolver;
     private final OrderRegistrationService orderRegistrationService;
+    private final GiftEventApplier giftEventApplier;
+    private final OrderRepository orderRepository;
     /** 청크당 주문 수 (테스트에서 경계 검증을 위해 바꿀 수 있도록 final이 아님) */
     private int chunkOrders;
 
     public OrderSeedService(SalesChannelRepository salesChannelRepository, BrandRepository brandRepository,
                             ProductRepository productRepository, ChannelProductResolver channelProductResolver,
-                            OrderRegistrationService orderRegistrationService,
+                            OrderRegistrationService orderRegistrationService, GiftEventApplier giftEventApplier,
+                            OrderRepository orderRepository,
                             @Value("${crossborder.seed.chunk-orders:1000}") int chunkOrders) {
         this.salesChannelRepository = salesChannelRepository;
         this.brandRepository = brandRepository;
         this.productRepository = productRepository;
         this.channelProductResolver = channelProductResolver;
         this.orderRegistrationService = orderRegistrationService;
+        this.giftEventApplier = giftEventApplier;
+        this.orderRepository = orderRepository;
         if (chunkOrders < 1) {
             throw new IllegalArgumentException("crossborder.seed.chunk-orders는 1 이상이어야 합니다. value=" + chunkOrders);
         }
@@ -117,13 +125,23 @@ public class OrderSeedService {
      */
     @ScopeCheck(ScopeTarget.BRAND)
     public OrderSeedResult seed(InputStream in, @ScopeId Long brandId) {
+        return seed(in, brandId, false);
+    }
+
+    /**
+     * @param applyGiftEvents true면 등록된 주문마다 사은품 이벤트를 판정·증정한다 (매핑안됨 항목은 조건 매칭에서만 빠진다). 청크 등록·할당 커밋 뒤 별도
+     *                        트랜잭션이고 응답 전에 끝난다 — 결과 파일을 받는 시점엔 증정까지 끝나 있다.
+     *                        증정 실패는 주문을 실패시키지 않고 결과 파일 해당 행에 재평가 안내를 붙인다
+     */
+    @ScopeCheck(ScopeTarget.BRAND)
+    public OrderSeedResult seed(InputStream in, @ScopeId Long brandId, boolean applyGiftEvents) {
         Brand brand = validateTarget(brandId);
         try (SeedUpload upload = SeedUpload.save(in)) {
-            return process(upload, brand.getId());
+            return process(upload, brand.getId(), applyGiftEvents);
         }
     }
 
-    private OrderSeedResult process(SeedUpload upload, Long brandId) {
+    private OrderSeedResult process(SeedUpload upload, Long brandId, boolean applyGiftEvents) {
         // 단계별 소요 시간 (README 성능 수치의 출처 — 완료 로그에 함께 남긴다). 2차 패스는 청크마다 누적한다
         Phases phases = new Phases();
         long started = System.nanoTime();
@@ -145,7 +163,7 @@ public class OrderSeedService {
         // 2차 패스: 청크 처리
         SeedResultStore results = new SeedResultStore(index);
         ChunkProcessor processor = new ChunkProcessor(index, results, new RowValidator(loadChannels(), brandId),
-                brandId, phases);
+                brandId, applyGiftEvents, phases);
         long pass2 = System.nanoTime();
         sheet.forEachDataRow((rowIndex, cells) -> {
             if (!sheet.isBlank(cells)) {
@@ -161,10 +179,12 @@ public class OrderSeedService {
         phases.add("writeResult", pass3);
 
         Counts counts = processor.counts;
-        log.info("주문 시딩 완료: rows={}, orders={}, chunks={}, success={}, unmapped={}, skipped={}, failed={}, elapsedMs={}, phasesMs={}",
+        log.info("주문 시딩 완료: rows={}, orders={}, chunks={}, success={}, unmapped={}, skipped={}, failed={}, giftGrants={}, giftFailed={}, elapsedMs={}, phasesMs={}",
                 indexBuilder.rowCount(), index.orderCount(), processor.chunks, counts.success, counts.unmapped,
-                counts.skipped, counts.failed, (System.nanoTime() - started) / 1_000_000, phases);
-        return new OrderSeedResult(resultFile, counts.success, counts.unmapped, counts.skipped, counts.failed);
+                counts.skipped, counts.failed, counts.giftGrants, counts.giftFailed,
+                (System.nanoTime() - started) / 1_000_000, phases);
+        return new OrderSeedResult(resultFile, counts.success, counts.unmapped, counts.skipped, counts.failed,
+                counts.giftGrants, counts.giftFailed);
     }
 
     /** 주문 단위 건수 (전 청크 누적) */
@@ -173,6 +193,8 @@ public class OrderSeedService {
         int unmapped;
         int skipped;
         int failed;
+        int giftGrants;
+        int giftFailed;
     }
 
     /** 단계별 누적 시간 (ms) */
@@ -212,6 +234,7 @@ public class OrderSeedService {
         private final SeedResultStore results;
         private final RowValidator rowValidator;
         private final Long brandId;
+        private final boolean applyGiftEvents;
         private final Phases phases;
         private final Map<Integer, List<OrderSeedRow>> pending = new HashMap<>();
         private final List<List<OrderSeedRow>> ready = new ArrayList<>();
@@ -219,11 +242,12 @@ public class OrderSeedService {
         private int chunks;
 
         ChunkProcessor(SeedOrderIndex index, SeedResultStore results, RowValidator rowValidator, Long brandId,
-                       Phases phases) {
+                       boolean applyGiftEvents, Phases phases) {
             this.index = index;
             this.results = results;
             this.rowValidator = rowValidator;
             this.brandId = brandId;
+            this.applyGiftEvents = applyGiftEvents;
             this.phases = phases;
         }
 
@@ -297,7 +321,37 @@ public class OrderSeedService {
                     }
                 }
             }
+            if (applyGiftEvents) {
+                applyGifts(valid, registered);
+            }
             ready.clear();
+        }
+
+        /** 등록된 주문(매핑안됨 포함)을 파일 순서대로 판정·증정 (선착순 한도의 순서) */
+        private void applyGifts(List<List<OrderSeedRow>> valid, List<OrderRegistrationResult> registered) {
+            long started = System.nanoTime();
+            Map<String, Integer> seqByOrderNo = new LinkedHashMap<>();
+            for (int i = 0; i < valid.size(); i++) {
+                OrderRegistrationResult result = registered.get(i);
+                if (result.status() == OrderRegistrationResult.Status.REGISTERED) {
+                    seqByOrderNo.put(result.orderNo(), seqOf(valid.get(i)));
+                }
+            }
+            if (seqByOrderNo.isEmpty()) {
+                return;
+            }
+            Map<String, Long> ids = new HashMap<>();
+            orderRepository.findIdsByOrderNoIn(seqByOrderNo.keySet())
+                    .forEach(row -> ids.put((String) row[1], (Long) row[0]));
+            Map<Long, Integer> seqById = new LinkedHashMap<>();
+            seqByOrderNo.forEach((orderNo, seq) -> seqById.put(ids.get(orderNo), seq));
+            GiftEventApplier.Outcome outcome = giftEventApplier.apply(List.copyOf(seqById.keySet()));
+            counts.giftGrants += outcome.grants();
+            outcome.failedOrders().forEach(orderId -> {
+                results.recordGiftFailed(seqById.get(orderId));
+                counts.giftFailed++;
+            });
+            phases.add("gift", started);
         }
 
         /** 원인 행엔 구체적 사유, 나머지 행은 "동일 주문 내 다른 행 오류로 미처리" (SeedResultStore가 조립) */
@@ -370,6 +424,9 @@ public class OrderSeedService {
                 first.text(OrderSeedColumn.RECEIVER_ADDRESS),
                 first.text(OrderSeedColumn.DELIVERY_MEMO),
                 first.dateTime(OrderSeedColumn.ORDERED_AT),
+                // 결제일시 미입력 = 주문일시 (A-1 폴백 저장)
+                first.dateTime(OrderSeedColumn.PAID_AT) != null ? first.dateTime(OrderSeedColumn.PAID_AT)
+                        : first.dateTime(OrderSeedColumn.ORDERED_AT),
                 items);
     }
 

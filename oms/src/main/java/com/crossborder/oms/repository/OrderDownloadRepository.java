@@ -4,6 +4,7 @@ import com.crossborder.common.entity.order.OrderItemStatus;
 import com.crossborder.common.entity.order.OrderItemType;
 import com.crossborder.common.entity.order.OrderStatus;
 import com.crossborder.common.entity.order.QOrder;
+import com.crossborder.common.entity.gift.QGiftEvent;
 import com.crossborder.common.entity.order.QOrderItem;
 import com.crossborder.common.entity.organization.QBrand;
 import com.crossborder.common.entity.product.QProduct;
@@ -38,6 +39,9 @@ public class OrderDownloadRepository {
     private static final QSaleProductItem composition = QSaleProductItem.saleProductItem;
     private static final QProduct component = new QProduct("component");
     private static final QProduct giftProduct = new QProduct("giftProduct");
+    private static final QGiftEvent giftEvent = QGiftEvent.giftEvent;
+    /** 판매상품 구성 고정 사은품의 출처 표기 (항목 gift_source 값과 같은 열에 쓴다) */
+    private static final String COMPOSITION = "COMPOSITION";
 
     private final JPAQueryFactory queryFactory;
 
@@ -47,7 +51,8 @@ public class OrderDownloadRepository {
 
     /** 다운로드 주문 (주문 레벨 열) */
     public record DownloadOrder(Long orderId, String orderNo, Long salesChannelId, String channelOrderNo,
-                                OrderStatus status, LocalDateTime orderedAt, String receiverName, String receiverPhone,
+                                OrderStatus status, LocalDateTime orderedAt, LocalDateTime paidAt,
+                                String receiverName, String receiverPhone,
                                 String receiverZipcode, String receiverAddress, String deliveryMemo,
                                 BigDecimal totalItemAmount, BigDecimal paidAmount, String currency) {
     }
@@ -57,23 +62,18 @@ public class OrderDownloadRepository {
     }
 
     /**
-     * 사은품 출처. COMPOSITION = 판매상품 구성에 고정된 사은품, ORDER = 주문 건별 사은품 항목
-     */
-    public enum GiftSource {
-        COMPOSITION,
-        ORDER
-    }
-
-    /**
      * 전개 1행 = 항목의 구성 제품 1개 (건별 사은품 항목은 그 제품 1행, 매핑안됨 항목은 전개 없이 1행).
      *
      * @param productQuantity 항목 수량 × 구성 수량. 매핑안됨이면 null
      * @param sku             매핑안됨이면 null
+     * @param giftSource      사은품 출처: COMPOSITION(판매상품 구성 고정) / 건별 사은품 항목의 gift_source(COLLECTED·EVENT·MANUAL).
+     *                        사은품이 아니면 null
+     * @param giftEventName   EVENT 사은품의 이벤트 "[코드] 이벤트명" (증정 추적용 — 코드는 운영자가 부르는 식별자)
      */
     public record DownloadLine(Long orderId, String brandName, String saleProductCode, String productName,
                                String channelProductCode, String channelOptionCode, int itemQuantity,
                                BigDecimal unitPrice, String sku, Integer productQuantity, boolean gift,
-                               GiftSource giftSource) {
+                               String giftSource, String giftEventName) {
     }
 
     /** 커서 다음 주문 묶음 (최신순). 목록의 PAGE 형태 조건을 쓴다 — 주문을 인덱스 순서로 읽다 묶음이 차면 멈춘다 */
@@ -87,7 +87,7 @@ public class OrderDownloadRepository {
         return queryFactory
                 .select(Projections.constructor(DownloadOrder.class,
                         order.id, order.orderNo, order.salesChannelId, order.channelOrderNo, order.status,
-                        order.orderedAt, order.receiverName, order.receiverPhone, order.receiverZipcode,
+                        order.orderedAt, order.paidAt, order.receiverName, order.receiverPhone, order.receiverZipcode,
                         order.receiverAddress, order.deliveryMemo, order.totalItemAmount, order.paidAmount,
                         order.currency))
                 .from(order)
@@ -105,17 +105,23 @@ public class OrderDownloadRepository {
         List<Tuple> tuples = queryFactory
                 .select(item.orderId, item.itemType, brand.name, saleProduct.code, saleProduct.name,
                         item.channelProductCode, item.channelOptionCode, item.quantity, item.unitPrice,
-                        component.sku, composition.quantity, composition.gift, giftProduct.sku, giftProduct.name)
+                        component.sku, composition.quantity, composition.gift, giftProduct.sku, giftProduct.name,
+                        item.giftSource, giftEvent.code, giftEvent.name)
                 .from(item)
                 .join(brand).on(brand.id.eq(item.brandId))
                 .leftJoin(saleProduct).on(saleProduct.id.eq(item.saleProductId))
                 .leftJoin(composition).on(composition.saleProductId.eq(item.saleProductId))
                 .leftJoin(component).on(component.id.eq(composition.productId))
                 .leftJoin(giftProduct).on(giftProduct.id.eq(item.productId))
+                .leftJoin(giftEvent).on(giftEvent.id.eq(item.giftEventId))
                 .where(item.orderId.in(orderIds), item.status.eq(OrderItemStatus.ORDERED))
                 .orderBy(item.orderId.asc(), item.id.asc(), composition.id.asc())
                 .fetch();
         return tuples.stream().map(OrderDownloadRepository::toLine).toList();
+    }
+
+    private static String eventLabel(String code, String name) {
+        return code == null ? null : "[" + code + "] " + name;
     }
 
     private static DownloadLine toLine(Tuple t) {
@@ -127,17 +133,18 @@ public class OrderDownloadRepository {
         BigDecimal unitPrice = t.get(item.unitPrice);
         if (t.get(item.itemType) == OrderItemType.GIFT_PRODUCT) {
             return new DownloadLine(orderId, brandName, null, t.get(giftProduct.name), channelProductCode, option,
-                    itemQuantity, unitPrice, t.get(giftProduct.sku), itemQuantity, true, GiftSource.ORDER);
+                    itemQuantity, unitPrice, t.get(giftProduct.sku), itemQuantity, true, t.get(item.giftSource).name(),
+                    eventLabel(t.get(giftEvent.code), t.get(giftEvent.name)));
         }
         String sku = t.get(component.sku);
         if (sku == null) {
             // 매핑안됨: 판매상품이 없어 전개할 수 없다 (채널 상품코드만)
             return new DownloadLine(orderId, brandName, null, null, channelProductCode, option, itemQuantity,
-                    unitPrice, null, null, false, null);
+                    unitPrice, null, null, false, null, null);
         }
         boolean gift = Boolean.TRUE.equals(t.get(composition.gift));
         return new DownloadLine(orderId, brandName, t.get(saleProduct.code), t.get(saleProduct.name),
                 channelProductCode, option, itemQuantity, unitPrice, sku, itemQuantity * t.get(composition.quantity),
-                gift, gift ? GiftSource.COMPOSITION : null);
+                gift, gift ? COMPOSITION : null, null);
     }
 }

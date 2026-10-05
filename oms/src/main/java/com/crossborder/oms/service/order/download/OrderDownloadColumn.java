@@ -24,6 +24,7 @@ public enum OrderDownloadColumn {
     CHANNEL("채널", 12, Type.TEXT, Row::channelCode),
     CHANNEL_ORDER_NO("마켓주문번호", 22, Type.TEXT, r -> r.order().channelOrderNo()),
     ORDERED_AT("주문일시", 20, Type.TEXT, r -> r.order().orderedAt().format(Row.DATE_TIME)),
+    PAID_AT("결제일시", 20, Type.TEXT, r -> r.order().paidAt() == null ? null : r.order().paidAt().format(Row.DATE_TIME)),
     ORDER_STATUS("주문상태", 16, Type.TEXT, r -> r.order().status().name()),
     // 항목 레벨
     BRAND("브랜드", 16, Type.TEXT, r -> r.line().brandName()),
@@ -37,7 +38,10 @@ public enum OrderDownloadColumn {
     SKU("SKU", 20, Type.TEXT, r -> r.line().sku()),
     PRODUCT_QUANTITY("제품수량", 10, Type.NUMBER, r -> r.line().productQuantity()),
     GIFT("사은품", 8, Type.TEXT, r -> r.line().gift() ? "Y" : "N"),
-    GIFT_SOURCE("사은품출처", 14, Type.TEXT, r -> r.line().giftSource() == null ? null : r.line().giftSource().name()),
+    /** COMPOSITION(구성 고정) / COLLECTED(채널 수신·시딩) / EVENT(이벤트 증정) / MANUAL(수동 증정) */
+    GIFT_SOURCE("사은품출처", 14, Type.TEXT, r -> r.line().giftSource()),
+    /** EVENT 행만 "[이벤트코드] 이벤트명" — 증정이 잘못됐을 때 파일에서 바로 어느 이벤트인지 추적 */
+    GIFT_EVENT("사은품이벤트", 24, Type.TEXT, r -> r.line().giftEventName()),
     // 수취인
     RECEIVER_NAME("수취인", 14, Type.TEXT, r -> r.order().receiverName()),
     RECEIVER_PHONE("수취인연락처", 16, Type.TEXT, r -> r.order().receiverPhone()),

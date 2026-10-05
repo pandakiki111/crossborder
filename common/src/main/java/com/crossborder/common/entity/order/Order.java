@@ -83,12 +83,16 @@ public class Order extends BaseAuditEntity {
     @Column(name = "ordered_at", nullable = false, updatable = false)
     private LocalDateTime orderedAt;
 
+    /** 결제 시각 (마켓 수신값). 이벤트 기준 시각 PAID용 — null이면 주문 시각으로 판정 */
+    @Column(name = "paid_at", updatable = false)
+    private LocalDateTime paidAt;
+
     @Builder
     private Order(String orderNo, Long salesChannelId, String channelOrderNo, Long companyId,
                   BigDecimal totalItemAmount, BigDecimal paidAmount, String currency,
                   String ordererName, String receiverName, String receiverPhone, String receiverZipcode,
                   String receiverAddress, String deliveryMemo, String marketMemo, LocalDateTime orderedAt,
-                  boolean mappingPending) {
+                  LocalDateTime paidAt, boolean mappingPending) {
         this.orderNo = orderNo;
         this.salesChannelId = salesChannelId;
         this.channelOrderNo = channelOrderNo;
@@ -104,6 +108,7 @@ public class Order extends BaseAuditEntity {
         this.deliveryMemo = deliveryMemo;
         this.marketMemo = marketMemo;
         this.orderedAt = orderedAt;
+        this.paidAt = paidAt;
         this.status = OrderStatus.PAID;
         this.mappingPending = mappingPending;
     }

@@ -29,7 +29,9 @@ public enum OrderSeedColumn {
     RECEIVER_ZIPCODE("우편번호", false, true, Type.TEXT, 10, "같은 주문의 모든 행에 같은 값"),
     RECEIVER_ADDRESS("주소", true, true, Type.TEXT, 500, "같은 주문의 모든 행에 같은 값"),
     DELIVERY_MEMO("배송메모", false, true, Type.TEXT, 300, "같은 주문의 모든 행에 같은 값"),
-    ORDERED_AT("주문일시", true, true, Type.DATETIME, null, "yyyy-MM-dd HH:mm:ss (예: 2026-10-01 14:30:00)");
+    ORDERED_AT("주문일시", true, true, Type.DATETIME, null, "yyyy-MM-dd HH:mm:ss (예: 2026-10-01 14:30:00)"),
+    PAID_AT("결제일시", false, true, Type.DATETIME, null,
+            "yyyy-MM-dd HH:mm:ss. 비우면 주문일시로 저장 (사은품 이벤트의 결제시간 기준 판정에 쓰입니다)");
 
     public enum Type {
         TEXT("텍스트"),

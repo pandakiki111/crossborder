@@ -18,6 +18,10 @@ import lombok.NoArgsConstructor;
  * 주문 항목 (수량 부분취소는 행 분할로 처리)
  * <p>
  * item_type별 참조 규칙(chk_order_items_type_ref)은 타입별 생성 메서드로 보장한다.
+ * <p>
+ * 사은품 출처 규칙 — GIFT_PRODUCT면 giftSource 필수(EVENT면 giftEventId 필수), 구매 항목은 둘 다 null —
+ * 은 이 클래스의 생성 메서드가 유일한 강제 지점이다. DB CHECK 없음 — 온라인 마이그레이션 비용으로 의도적 제외, V9 주석 참조.
+ * 생성자를 거치지 않는 JDBC 대량 쓰기(OrderBatchWriter, GiftEventApplier)는 이 클래스로 만든 값만 옮기거나 같은 규칙으로 쓴다.
  */
 @Getter
 @Entity
@@ -43,6 +47,15 @@ public class OrderItem extends BaseAuditEntity {
     @Column(name = "product_id", updatable = false)
     private Long productId;
 
+    /** 사은품 출처 (GIFT_PRODUCT만, 필수). 구매 항목은 null */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "gift_source", length = 20, updatable = false)
+    private GiftSource giftSource;
+
+    /** EVENT 사은품의 이벤트 */
+    @Column(name = "gift_event_id", updatable = false)
+    private Long giftEventId;
+
     /** 채널 상품코드 (마켓 수신값). 채널 수신 항목만 */
     @Column(name = "channel_product_code", length = 100, updatable = false)
     private String channelProductCode;
@@ -63,7 +76,7 @@ public class OrderItem extends BaseAuditEntity {
     private OrderItemStatus status;
 
     private OrderItem(Long orderId, Long brandId, OrderItemType itemType, Long saleProductId, Long productId,
-                      String channelProductCode, String channelOptionCode,
+                      GiftSource giftSource, Long giftEventId, String channelProductCode, String channelOptionCode,
                       int quantity, BigDecimal unitPrice, OrderItemStatus status) {
         if (quantity <= 0) {
             throw new IllegalArgumentException("주문 수량은 1 이상이어야 합니다. quantity=" + quantity);
@@ -73,6 +86,8 @@ public class OrderItem extends BaseAuditEntity {
         this.itemType = itemType;
         this.saleProductId = saleProductId;
         this.productId = productId;
+        this.giftSource = giftSource;
+        this.giftEventId = giftEventId;
         this.channelProductCode = channelProductCode;
         this.channelOptionCode = channelOptionCode;
         this.quantity = quantity;
@@ -86,7 +101,7 @@ public class OrderItem extends BaseAuditEntity {
     public static OrderItem ofSaleProduct(Long orderId, SaleProduct saleProduct, int quantity, BigDecimal unitPrice) {
         Objects.requireNonNull(saleProduct.getId(), "저장되지 않은 판매상품으로 주문 항목을 만들 수 없습니다.");
         return new OrderItem(orderId, saleProduct.getBrandId(), OrderItemType.SALE_PRODUCT, saleProduct.getId(), null,
-                null, null, quantity, unitPrice, OrderItemStatus.ORDERED);
+                null, null, null, null, quantity, unitPrice, OrderItemStatus.ORDERED);
     }
 
     /**
@@ -104,17 +119,26 @@ public class OrderItem extends BaseAuditEntity {
             requireSameBrand(brandId, saleProduct);
         }
         return new OrderItem(orderId, brandId, OrderItemType.SALE_PRODUCT,
-                saleProduct == null ? null : saleProduct.getId(), null,
+                saleProduct == null ? null : saleProduct.getId(), null, null, null,
                 channelProductCode, channelOptionCode, quantity, unitPrice, OrderItemStatus.ORDERED);
     }
 
     /**
-     * brandId는 제품에서 주문 시점 복사
+     * 운영자 수동 증정 (MANUAL). brandId는 제품에서 주문 시점 복사, 단가 0
      */
-    public static OrderItem ofGift(Long orderId, Product product, int quantity) {
+    public static OrderItem ofManualGift(Long orderId, Product product, int quantity) {
         Objects.requireNonNull(product.getId(), "저장되지 않은 제품으로 주문 항목을 만들 수 없습니다.");
         return new OrderItem(orderId, product.getBrandId(), OrderItemType.GIFT_PRODUCT, null, product.getId(),
-                null, null, quantity, BigDecimal.ZERO, OrderItemStatus.ORDERED);
+                GiftSource.MANUAL, null, null, null, quantity, BigDecimal.ZERO, OrderItemStatus.ORDERED);
+    }
+
+    /**
+     * 이벤트 자동 증정 (EVENT). 이벤트 품목 1종당 1행 — 같은 제품이라도 다른 항목과 합산하지 않는다. 단가 0
+     */
+    public static OrderItem ofEventGift(Long orderId, Long brandId, Long productId, int quantity, Long giftEventId) {
+        Objects.requireNonNull(giftEventId, "이벤트가 없습니다.");
+        return new OrderItem(orderId, brandId, OrderItemType.GIFT_PRODUCT, null, Objects.requireNonNull(productId),
+                GiftSource.EVENT, giftEventId, null, null, quantity, BigDecimal.ZERO, OrderItemStatus.ORDERED);
     }
 
     /**
@@ -132,7 +156,8 @@ public class OrderItem extends BaseAuditEntity {
                     + ", sku=" + product.getSku() + ", productBrandId=" + product.getBrandId());
         }
         return new OrderItem(orderId, brandId, OrderItemType.GIFT_PRODUCT, null, product.getId(),
-                channelProductCode, channelOptionCode, quantity, unitPrice, OrderItemStatus.ORDERED);
+                GiftSource.COLLECTED, null, channelProductCode, channelOptionCode, quantity, unitPrice,
+                OrderItemStatus.ORDERED);
     }
 
     /**
@@ -185,7 +210,7 @@ public class OrderItem extends BaseAuditEntity {
                     "부분취소 수량은 1 이상, 현재 수량(" + quantity + ") 미만이어야 합니다. cancelQuantity=" + cancelQuantity);
         }
         this.quantity -= cancelQuantity;
-        return new OrderItem(orderId, brandId, itemType, saleProductId, productId,
+        return new OrderItem(orderId, brandId, itemType, saleProductId, productId, giftSource, giftEventId,
                 channelProductCode, channelOptionCode, cancelQuantity, unitPrice, OrderItemStatus.CANCELED);
     }
 

@@ -84,6 +84,9 @@ public class OrderRegistrationService {
     /**
      * 대량 등록. 한 주문 = 단일 브랜드, 회사는 브랜드에서 정한다. 매핑 없는 항목이 있으면 매핑안됨으로 등록한다.
      * 한 주문의 실패가 다른 주문에 영향을 주지 않는다.
+     * <p>
+     * 사은품 이벤트는 여기서 하지 않는다 — 호출 측이 등록 커밋 뒤 REGISTERED 주문을 입력 순서대로
+     * GiftEventApplier.apply로 넘긴다 (엑셀 시딩 applyGiftEvents). 마켓 수집 API도 같은 지점에서 호출할 것 (예약).
      *
      * @return commands와 같은 순서의 결과
      */
@@ -151,6 +154,7 @@ public class OrderRegistrationService {
                 .receiverAddress(command.receiverAddress())
                 .deliveryMemo(command.deliveryMemo())
                 .orderedAt(command.orderedAt())
+                .paidAt(command.paidAt())
                 .mappingPending(command.items().stream().anyMatch(item -> !item.isMapped()))
                 .build();
 

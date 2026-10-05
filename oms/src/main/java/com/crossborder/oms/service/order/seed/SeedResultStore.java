@@ -1,6 +1,7 @@
 package com.crossborder.oms.service.order.seed;
 
 import com.crossborder.oms.service.order.seed.OrderSeedSheet.ResultKind;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -20,6 +21,7 @@ final class SeedResultStore {
     private final ResultKind[] orderKinds;
     private final String[] orderTexts;
     private final Map<Integer, String> rowDetails = new HashMap<>();
+    private final BitSet giftFailed = new BitSet();
 
     SeedResultStore(SeedOrderIndex index) {
         this.index = index;
@@ -36,6 +38,11 @@ final class SeedResultStore {
         rowDetails.put(rowIndex, detail);
     }
 
+    /** 등록은 됐지만 사은품 이벤트 증정에 실패한 주문 (처리결과에 재평가 안내를 붙인다) */
+    void recordGiftFailed(int orderSeq) {
+        giftFailed.set(orderSeq);
+    }
+
     /** 처리결과가 없는 행(데이터 없는 행)은 null */
     RowResult resultOf(int rowIndex) {
         int seq = index.orderOf(rowIndex);
@@ -46,7 +53,7 @@ final class SeedResultStore {
         String text = orderTexts[seq];
         String detail = rowDetails.get(rowIndex);
         String message = switch (kind) {
-            case SUCCESS -> "성공: " + text;
+            case SUCCESS -> "성공: " + text + (giftFailed.get(seq) ? " - " + OrderSeedService.GIFT_FAILED : "");
             case UNMAPPED -> "성공(매핑안됨): " + text + (detail != null ? " - " + detail : "");
             case SKIPPED -> "스킵: " + OrderSeedService.SKIPPED;
             case FAILED -> "실패: " + (detail != null ? detail : text != null ? text : OrderSeedService.SIBLING_FAILED);

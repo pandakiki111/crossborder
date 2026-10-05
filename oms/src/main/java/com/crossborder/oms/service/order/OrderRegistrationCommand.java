@@ -11,6 +11,8 @@ import java.util.List;
  * 채널 상품코드 → 판매상품 확정은 호출 측 책임 (ChannelProductResolver).
  * 매핑이 없는 항목도 받는다 (saleProductId = null) — 주문은 매핑안됨(mappingPending)으로 등록된다.
  * <p>
+ * paidAt: 결제 시각 (마켓 수신값, 없으면 null — 이벤트 PAID 기준은 주문 시각으로 판정). 엑셀 시딩은 미입력 시 orderedAt을 넣는다.
+ * <p>
  * brandId: 한 주문 = 단일 브랜드. 수집 시점에 알고 있다 (엑셀 시딩은 업로드 시 지정, 수집은 스토어 계정 기준).
  * 회사는 브랜드에서 정하고, 매핑은 이 브랜드 안에서만 찾는다.
  */
@@ -28,8 +30,18 @@ public record OrderRegistrationCommand(
         String receiverAddress,
         String deliveryMemo,
         LocalDateTime orderedAt,
+        LocalDateTime paidAt,
         List<Item> items
 ) {
+
+    /** 결제 시각 없이 (paidAt = null) */
+    public OrderRegistrationCommand(Long salesChannelId, String channelOrderNo, Long brandId, BigDecimal totalItemAmount,
+                                    BigDecimal paidAmount, String currency, String ordererName, String receiverName,
+                                    String receiverPhone, String receiverZipcode, String receiverAddress,
+                                    String deliveryMemo, LocalDateTime orderedAt, List<Item> items) {
+        this(salesChannelId, channelOrderNo, brandId, totalItemAmount, paidAmount, currency, ordererName, receiverName,
+                receiverPhone, receiverZipcode, receiverAddress, deliveryMemo, orderedAt, null, items);
+    }
 
     /**
      * @param saleProductId     일반 항목: 매핑으로 확정된 판매상품. 매핑 없으면 null (매핑안됨)

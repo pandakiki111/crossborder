@@ -9,4 +9,10 @@ public interface ProductRepository extends JpaRepository<Product, Long> {
 
     /** 대량 조회 (사은품 SKU → 제품). 업로드 브랜드의 제품만 본다. skus는 IN 절 크기 단위로 나눠서 넘긴다 */
     List<Product> findByBrandIdAndSkuIn(Long brandId, Collection<String> skus);
+
+    boolean existsBySku(String sku);
+
+    List<Product> findByBrandIdInOrderByIdAsc(Collection<Long> brandIds);
+
+    List<Product> findAllByOrderByIdAsc();
 }

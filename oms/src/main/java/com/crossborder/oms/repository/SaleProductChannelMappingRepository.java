@@ -59,6 +59,15 @@ public interface SaleProductChannelMappingRepository extends JpaRepository<SaleP
                                                              @Param("code") String code,
                                                              @Param("optionCode") String optionCode);
 
+    /** 판매상품의 현재 유효 매핑 (비활성화 잔존 경고) */
+    @Query("select m from SaleProductChannelMapping m where m.saleProductId = :saleProductId and m.effectiveTo is null")
+    List<SaleProductChannelMapping> findCurrentBySaleProductId(@Param("saleProductId") Long saleProductId);
+
+    /** 판매상품의 현재 유효 매핑 (리뉴얼 일괄 재지정 대상), 잠금 */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select m from SaleProductChannelMapping m where m.saleProductId = :saleProductId and m.effectiveTo is null")
+    List<SaleProductChannelMapping> findCurrentBySaleProductIdForUpdate(@Param("saleProductId") Long saleProductId);
+
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select m from SaleProductChannelMapping m where m.id = :id")
     Optional<SaleProductChannelMapping> findByIdForUpdate(@Param("id") Long id);

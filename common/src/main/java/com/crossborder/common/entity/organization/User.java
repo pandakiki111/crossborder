@@ -26,6 +26,11 @@ public class User extends BaseEntity {
     /** 시스템 수행자 계정 (V4 시딩). 로그인 불가 상태를 유지해야 한다. */
     public static final String SYSTEM_LOGIN_ID = "SYSTEM";
 
+    /** 탈퇴 시 비밀번호 대체값 — BCrypt 형식이 아니라 어떤 입력과도 매칭되지 않는다 (SYSTEM 계정과 같은 값) */
+    public static final String UNUSABLE_PASSWORD = "!";
+    /** 탈퇴 시 이름 대체값 */
+    public static final String WITHDRAWN_NAME = "탈퇴회원";
+
     @Column(name = "login_id", nullable = false, length = 50)
     private String loginId;
 
@@ -107,11 +112,55 @@ public class User extends BaseEntity {
     }
 
     public void changeName(String name) {
+        requireNotWithdrawn();
         this.name = name;
+    }
+
+    /**
+     * 이메일 변경. 관리자군은 login_id = 이메일 값이라 login_id도 함께 바뀐다 (반환값 true — 호출 측이 사용자에게 안내).
+     * WORKER는 login_id(작업자코드)와 무관하다.
+     * <p>
+     * login_id가 바뀌어도 기발급 JWT는 만료까지 유효하다 — claims가 userId 기준이라 동작에 문제가 없고, 의도된 동작이다.
+     *
+     * @return login_id가 바뀌었으면 true
+     */
+    public boolean changeEmail(String email) {
+        requireNotWithdrawn();
+        requireNotSystem("이메일 변경");
+        if (role.isAdminGroup() && (email == null || email.isBlank())) {
+            throw new IllegalArgumentException("관리자군 사용자는 이메일이 필수입니다.");
+        }
+        this.email = email;
+        if (role.isAdminGroup() && !email.equals(loginId)) {
+            this.loginId = email;
+            return true;
+        }
+        return false;
+    }
+
+    /** COMPANY_STAFF 소속 회사 변경 (role 변경은 미지원 — 재등록) */
+    public void changeCompany(Long companyId) {
+        requireNotWithdrawn();
+        if (role != UserRole.COMPANY_STAFF) {
+            throw new IllegalStateException("소속 회사 변경은 COMPANY_STAFF만 가능합니다. role=" + role);
+        }
+        this.companyId = Objects.requireNonNull(companyId, "COMPANY_STAFF는 소속 회사가 필수입니다.");
+    }
+
+    /** BRAND_STAFF 소속 브랜드 변경. 회사는 브랜드에서 꺼낸다 (회사-브랜드 소속 불일치 방지, createBrandStaff와 같다) */
+    public void changeBrand(Brand brand) {
+        requireNotWithdrawn();
+        if (role != UserRole.BRAND_STAFF) {
+            throw new IllegalStateException("소속 브랜드 변경은 BRAND_STAFF만 가능합니다. role=" + role);
+        }
+        Objects.requireNonNull(brand.getId(), "저장되지 않은 브랜드로 소속을 바꿀 수 없습니다.");
+        this.brandId = brand.getId();
+        this.companyId = brand.getCompanyId();
     }
 
     public void changePassword(String encodedPassword) {
         requireNotSystem("비밀번호 변경");
+        requireNotWithdrawn();
         this.password = encodedPassword;
     }
 
@@ -154,14 +203,36 @@ public class User extends BaseEntity {
     }
 
     /**
-     * 탈퇴 처리. 개인정보 마스킹 및 login_id 변형(유니크 반납)은 서비스/배치 책임 — 탈퇴 정책 참조
+     * 탈퇴 처리 (상태만). 개인정보 마스킹·login_id 변형(유니크 반납)은 {@link #anonymize}로 같은 트랜잭션에서 한다
+     * (UserAdminService.withdraw — 즉시 처리, 배치 유예 없음).
      */
     public void withdraw() {
+        requireNotSystem("탈퇴");
         if (status == UserStatus.WITHDRAWN) {
             throw new IllegalStateException("이미 탈퇴한 사용자입니다. id=" + getId());
         }
         this.status = UserStatus.WITHDRAWN;
         this.deletedAt = LocalDateTime.now();
+    }
+
+    /**
+     * 탈퇴 마스킹 체크리스트 (탈퇴 상태에서만):
+     * <ul>
+     *   <li>login_id → 변형값 (원래 값은 유니크에서 반납 — 같은 아이디로 재가입 가능)</li>
+     *   <li>email → 관리자군은 마스킹 주소(DB CHECK로 NULL 불가), WORKER는 NULL</li>
+     *   <li>name → "탈퇴회원", password → 매칭 불가 값, OTP 시크릿 삭제</li>
+     * </ul>
+     * 변형값 형식은 서비스가 정한다 (UserAdminService).
+     */
+    public void anonymize(String maskedLoginId, String maskedEmail) {
+        if (status != UserStatus.WITHDRAWN) {
+            throw new IllegalStateException("탈퇴한 사용자만 마스킹합니다. id=" + getId());
+        }
+        this.loginId = maskedLoginId;
+        this.email = role.isAdminGroup() ? maskedEmail : null;
+        this.name = WITHDRAWN_NAME;
+        this.password = UNUSABLE_PASSWORD;
+        resetOtp();
     }
 
     public boolean isActive() {
@@ -170,6 +241,12 @@ public class User extends BaseEntity {
 
     public boolean isSystem() {
         return SYSTEM_LOGIN_ID.equals(loginId);
+    }
+
+    private void requireNotWithdrawn() {
+        if (status == UserStatus.WITHDRAWN) {
+            throw new IllegalStateException("탈퇴한 사용자는 변경할 수 없습니다. id=" + getId());
+        }
     }
 
     private void requireNotSystem(String action) {

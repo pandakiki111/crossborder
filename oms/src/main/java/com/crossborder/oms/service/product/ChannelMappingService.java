@@ -16,6 +16,7 @@ import com.crossborder.oms.repository.SaleProductRepository;
 import com.crossborder.oms.repository.SalesChannelRepository;
 import com.crossborder.oms.security.AuthenticatedUser;
 import com.crossborder.oms.security.scope.ScopePolicy;
+import com.crossborder.oms.service.support.BrandWriteGuard;
 import com.crossborder.oms.service.order.OrderMappingService;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -47,17 +48,20 @@ public class ChannelMappingService {
     private final SalesChannelRepository salesChannelRepository;
     private final ScopePolicy scopePolicy;
     private final OrderMappingService orderMappingService;
+    private final BrandWriteGuard brandWriteGuard;
     private final Clock clock;
 
     public ChannelMappingService(SaleProductChannelMappingRepository mappingRepository,
                                  SaleProductRepository saleProductRepository,
                                  SalesChannelRepository salesChannelRepository, ScopePolicy scopePolicy,
-                                 OrderMappingService orderMappingService, Clock clock) {
+                                 OrderMappingService orderMappingService, BrandWriteGuard brandWriteGuard,
+                                 Clock clock) {
         this.mappingRepository = mappingRepository;
         this.saleProductRepository = saleProductRepository;
         this.salesChannelRepository = salesChannelRepository;
         this.scopePolicy = scopePolicy;
         this.orderMappingService = orderMappingService;
+        this.brandWriteGuard = brandWriteGuard;
         this.clock = clock;
     }
 
@@ -146,6 +150,7 @@ public class ChannelMappingService {
         if (!scopePolicy.canAccessBrand(mapping.getBrandId(), user)) {
             throw new ForbiddenException("해당 매핑에 대한 권한이 없습니다. mappingId=" + mappingId);
         }
+        brandWriteGuard.requireWritable(mapping.getBrandId());
         if (!mapping.isCurrent()) {
             throw new ConflictException("마감된 매핑(이력)은 변경할 수 없습니다. mappingId=" + mappingId);
         }
@@ -158,6 +163,7 @@ public class ChannelMappingService {
         if (!scopePolicy.canAccessBrand(saleProduct.getBrandId(), user)) {
             throw new ForbiddenException("해당 판매상품에 대한 권한이 없습니다. saleProductId=" + saleProductId);
         }
+        brandWriteGuard.requireWritable(saleProduct.getBrandId());
         if (!saleProduct.isActive()) {
             throw new InvalidRequestException("비활성 판매상품입니다. saleProductId=" + saleProductId);
         }

@@ -16,6 +16,7 @@ import com.crossborder.oms.service.order.OrderMappingService;
 import com.crossborder.oms.service.product.ChannelProductResolver.MappingHistory;
 import com.crossborder.oms.service.product.ChannelProductResolver.MappingKey;
 import com.crossborder.oms.service.stock.StockAllocator;
+import com.crossborder.oms.service.support.BrandWriteGuard;
 import com.crossborder.oms.support.InMemoryLockManager;
 import java.time.Clock;
 import java.time.Instant;
@@ -57,7 +58,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @ImportAutoConfiguration({EntityScanConfig.class, JpaAuditingConfig.class, QuerydslConfig.class})
 @Import({ChannelMappingService.class, OrderMappingService.class, ChannelProductResolver.class, ScopePolicy.class,
-        StockAllocator.class, ChannelMappingHistoryTest.ClockTestConfig.class})
+        StockAllocator.class, BrandWriteGuard.class, ChannelMappingHistoryTest.ClockTestConfig.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 @Testcontainers
 class ChannelMappingHistoryTest {

@@ -3,6 +3,7 @@ package com.crossborder.oms.service.order.seed;
 import com.crossborder.common.entity.organization.Brand;
 import com.crossborder.common.entity.product.SaleProductChannelMapping;
 import com.crossborder.common.entity.product.SalesChannel;
+import com.crossborder.oms.exception.ConflictException;
 import com.crossborder.oms.exception.ForbiddenException;
 import com.crossborder.oms.exception.InvalidRequestException;
 import com.crossborder.oms.exception.NotFoundException;
@@ -19,6 +20,7 @@ import com.crossborder.oms.service.order.OrderRegistrationResult;
 import com.crossborder.oms.service.order.OrderRegistrationService;
 import com.crossborder.oms.service.order.seed.OrderSeedSheet.ResultKind;
 import com.crossborder.oms.service.product.ChannelProductResolver;
+import com.crossborder.oms.service.support.BrandWriteGuard;
 import com.crossborder.oms.service.product.ChannelProductResolver.MappingHistory;
 import com.crossborder.oms.service.product.ChannelProductResolver.MappingKey;
 import com.crossborder.oms.service.support.InClause;
@@ -89,13 +91,14 @@ public class OrderSeedService {
     private final OrderRegistrationService orderRegistrationService;
     private final GiftEventApplier giftEventApplier;
     private final OrderRepository orderRepository;
+    private final BrandWriteGuard brandWriteGuard;
     /** 청크당 주문 수 (테스트에서 경계 검증을 위해 바꿀 수 있도록 final이 아님) */
     private int chunkOrders;
 
     public OrderSeedService(SalesChannelRepository salesChannelRepository, BrandRepository brandRepository,
                             ProductRepository productRepository, ChannelProductResolver channelProductResolver,
                             OrderRegistrationService orderRegistrationService, GiftEventApplier giftEventApplier,
-                            OrderRepository orderRepository,
+                            OrderRepository orderRepository, BrandWriteGuard brandWriteGuard,
                             @Value("${crossborder.seed.chunk-orders:1000}") int chunkOrders) {
         this.salesChannelRepository = salesChannelRepository;
         this.brandRepository = brandRepository;
@@ -104,6 +107,7 @@ public class OrderSeedService {
         this.orderRegistrationService = orderRegistrationService;
         this.giftEventApplier = giftEventApplier;
         this.orderRepository = orderRepository;
+        this.brandWriteGuard = brandWriteGuard;
         if (chunkOrders < 1) {
             throw new IllegalArgumentException("crossborder.seed.chunk-orders는 1 이상이어야 합니다. value=" + chunkOrders);
         }
@@ -120,7 +124,7 @@ public class OrderSeedService {
     /**
      * @throws NotFoundException        브랜드가 없음 (@ScopeCheck)
      * @throws ForbiddenException       업로더 스코프 밖 브랜드 (@ScopeCheck)
-     * @throws InvalidRequestException  계약종료 브랜드
+     * @throws ConflictException       비활성·계약종료 브랜드 (BrandWriteGuard)
      * @throws InvalidSeedFileException 파일 자체를 처리할 수 없음 (행 단위 오류는 결과 파일에 기록)
      */
     @ScopeCheck(ScopeTarget.BRAND)
@@ -366,13 +370,9 @@ public class OrderSeedService {
         }
     }
 
+    /** 비활성·계약종료 브랜드에는 신규 주문을 등록하지 않는다 (409, BrandWriteGuard) */
     private Brand validateTarget(Long brandId) {
-        Brand brand = brandRepository.findById(brandId)
-                .orElseThrow(() -> new NotFoundException("브랜드를 찾을 수 없습니다. brandId=" + brandId));
-        if (brand.isTerminated()) {
-            throw new InvalidRequestException("계약종료된 브랜드입니다. brandId=" + brandId);
-        }
-        return brand;
+        return brandWriteGuard.requireWritable(brandId);
     }
 
     // ---------------------------------------------------------------- 주문 단위 처리

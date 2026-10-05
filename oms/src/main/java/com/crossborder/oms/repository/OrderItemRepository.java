@@ -12,6 +12,9 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, Long> {
 
     boolean existsByOrderIdAndBrandId(Long orderId, Long brandId);
 
+    /** 판매상품 주문 이력 (구성 변경 금지 판정 — 취소 항목 포함) */
+    boolean existsBySaleProductId(Long saleProductId);
+
     /** 주문 항목의 판매상품 id (엔티티를 영속성 컨텍스트에 올리지 않는 락 키 산정용) */
     @Query("select distinct i.saleProductId from OrderItem i where i.orderId = :orderId and i.saleProductId is not null")
     List<Long> findSaleProductIds(@Param("orderId") Long orderId);

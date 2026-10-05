@@ -276,6 +276,28 @@ class GiftEventIntegrationTest extends IntegrationTestBase {
     }
 
     @Test
+    void 판매상품코드_조건은_이벤트_브랜드_안에서만_매칭한다() {
+        // 다른 브랜드에 같은 판매상품코드 (브랜드 내 유니크라 허용, V10)
+        long otherBrand = brand(company("남의상사"), "남의브랜드");
+        long otherProduct = product(otherBrand, "OTHER-TONER");
+        long otherSale = saleProduct(otherBrand, "EV-A");
+        composition(otherSale, otherProduct, 1, false);
+        assertThat(jdbc.queryForObject("SELECT code FROM sale_products WHERE id = ?", String.class, otherSale)).isEqualTo(setA);
+        long eventId = eventService.create(request(GiftGrantType.ALWAYS, fixed(1), at(0), at(24), List.of(condition(setA)),
+                List.of(new GiftEventRequest.Item(giftA, null, null))), ADMIN).id();
+        registrationService.registerAll(List.of(new OrderRegistrationCommand(channelId, suffix + "-OTHER", otherBrand,
+                BigDecimal.valueOf(5000), BigDecimal.valueOf(5000), "JPY", "주문자", "수취인", null, null, "주소", null,
+                at(10), List.of(sale(otherSale, 1)))));
+        long otherOrder = jdbc.queryForObject("SELECT id FROM orders WHERE channel_order_no = ?", Long.class, suffix + "-OTHER");
+        long ownOrder = order("OWN", at(10), sale(saleA, 1));
+
+        applier.apply(List.of(otherOrder, ownOrder));
+
+        assertThat(eventGift(otherOrder, eventId)).as("타 브랜드 동일 코드 오매칭 없음").isZero();
+        assertThat(eventGift(ownOrder, eventId)).isEqualTo(1);
+    }
+
+    @Test
     void 미리보기는_설정을_운영자_문장으로_옮긴다() {
         GiftEventRequest request = new GiftEventRequest(brandId, "10월 이벤트", GiftTimeBasis.ORDERED, at(6), at(20),
                 BigDecimal.valueOf(100_000), null, GiftConditionMode.ALL, GiftGrantType.SEQUENTIAL,

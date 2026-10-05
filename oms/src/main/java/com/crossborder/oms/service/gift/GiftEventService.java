@@ -26,6 +26,7 @@ import com.crossborder.oms.repository.ProductRepository;
 import com.crossborder.oms.repository.SaleProductRepository;
 import com.crossborder.oms.security.AuthenticatedUser;
 import com.crossborder.oms.security.scope.ScopePolicy;
+import com.crossborder.oms.service.support.BrandWriteGuard;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.time.Clock;
@@ -78,6 +79,7 @@ public class GiftEventService {
     private final ProductRepository productRepository;
     private final BrandRepository brandRepository;
     private final ScopePolicy scopePolicy;
+    private final BrandWriteGuard brandWriteGuard;
     private final JdbcTemplate jdbcTemplate;
     private final Clock clock;
     private final Long systemUserId;
@@ -85,7 +87,8 @@ public class GiftEventService {
     public GiftEventService(GiftEventRepository eventRepository, GiftEventConditionRepository conditionRepository,
                             GiftEventItemRepository itemRepository, GiftEventActivePeriodRepository periodRepository,
                             SaleProductRepository saleProductRepository, ProductRepository productRepository,
-                            BrandRepository brandRepository, ScopePolicy scopePolicy, JdbcTemplate jdbcTemplate,
+                            BrandRepository brandRepository, ScopePolicy scopePolicy, BrandWriteGuard brandWriteGuard,
+                            JdbcTemplate jdbcTemplate,
                             Clock clock, @Value("${crossborder.audit.system-user-id:1}") Long systemUserId) {
         this.eventRepository = eventRepository;
         this.conditionRepository = conditionRepository;
@@ -95,6 +98,7 @@ public class GiftEventService {
         this.productRepository = productRepository;
         this.brandRepository = brandRepository;
         this.scopePolicy = scopePolicy;
+        this.brandWriteGuard = brandWriteGuard;
         this.jdbcTemplate = jdbcTemplate;
         this.clock = clock;
         this.systemUserId = systemUserId;
@@ -107,6 +111,7 @@ public class GiftEventService {
      */
     public GiftEventResponse create(GiftEventRequest request, AuthenticatedUser user) {
         scopePolicy.requireBrand(request.brandId(), user);
+        brandWriteGuard.requireWritable(request.brandId());
         GiftEvent draft = definitionOf(() -> GiftEvent.create(request.brandId(), toDefinition(request)));
         GiftEvent event = eventRepository.findById(insertWithCode(draft)).orElseThrow();
         saveDetails(event, request);
@@ -149,6 +154,7 @@ public class GiftEventService {
         if (!event.getBrandId().equals(request.brandId())) {
             throw new InvalidRequestException("이벤트 브랜드는 바꿀 수 없습니다.");
         }
+        brandWriteGuard.requireWritable(event.getBrandId());
         requireNoGrants(event, "수정");
         boolean stopped = periodRepository.findByGiftEventIdAndActiveToIsNull(eventId).isEmpty();
         definitionOf(() -> {
@@ -172,6 +178,7 @@ public class GiftEventService {
      */
     public void delete(Long eventId, AuthenticatedUser user) {
         GiftEvent event = require(eventId, user);
+        brandWriteGuard.requireWritable(event.getBrandId());
         requireNoGrants(event, "삭제");
         conditionRepository.deleteByGiftEventId(eventId);
         itemRepository.deleteByGiftEventId(eventId);
@@ -205,6 +212,7 @@ public class GiftEventService {
     public GiftEventResponse restart(Long eventId, AuthenticatedUser user) {
         GiftEvent event = require(eventId, user);
         LocalDateTime now = now();
+        brandWriteGuard.requireWritable(event.getBrandId());
         requireNotEnded(event, now, "재시작");
         if (periodRepository.findByGiftEventIdAndActiveToIsNull(eventId).isPresent()) {
             throw new ConflictException("이미 활성 중인 이벤트입니다.");

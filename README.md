@@ -437,7 +437,7 @@ FK 인덱스를 늘리지 않고 대체한다. 모두 `ALGORITHM=INPLACE, LOCK=N
   updated_at/updated_user_id 없음.
 - soft delete: 마스터(users, companies, brands, products, sale_products)는
   물리 삭제 금지, status(+deleted_at)로. FK는 유지(RESTRICT).
-  탈퇴 시 개인정보 마스킹·login_id 변형 반납은 서비스/배치 책임.
+  탈퇴 시 개인정보 마스킹·login_id 변형 반납은 서비스가 즉시 처리한다 (§3 사용자 관리, 배치 유예 없음).
 - 대형 운영 테이블(orders, order_items, shipments) 변경은 쓰기를 막지 않는 방식만: 컬럼 ALGORITHM=INSTANT,
   인덱스·FK ALGORITHM=INPLACE, LOCK=NONE (FK는 새 컬럼이 전부 NULL일 때 foreign_key_checks=0으로). 지원되지 않으면
   즉시 실패하도록 ALGORITHM을 항상 명시한다. CHECK 추가는 COPY(테이블 재작성)만 되므로 기존 대형 테이블에는 넣지 않고
@@ -474,6 +474,29 @@ FK 인덱스를 늘리지 않고 대체한다. 모두 `ALGORITHM=INPLACE, LOCK=N
 - WORKER 로그인은 기기 신뢰 인증(2차) 구현 전까지 차단.
   관리자군 TOTP도 2차. 상세는 docs/device-registration.md.
 - login_histories는 성공 로그인만 기록.
+- 회사·브랜드 관리 (ADMIN 전용, /api/admin/companies·brands):
+  - 비활성화(deactivate, 가역)와 계약종료(terminate, 불가역 — deleted_at 기록)를 둘 다 둔다. 계약종료는 확인값(confirm =
+    회사·브랜드명 그대로)이 필요하고 응답에 "재활성화 불가"를 명시한다. 계약종료된 회사·브랜드의 재활성화는 409.
+  - 연쇄 거부: 회사는 ACTIVE 브랜드가 있으면, 브랜드는 ACTIVE 판매상품이 있으면 비활성화·계약종료 모두 409 + 목록.
+    회사 계약종료는 더 엄격하게, 계약종료되지 않은 브랜드(INACTIVE 포함)가 하나라도 있으면 409 — 재활성화할 수 없는 회사
+    아래에 "비활성이지만 계약 유지" 브랜드가 남지 않도록 브랜드를 모두 계약종료한 뒤 회사를 계약종료한다.
+    소속 사용자는 어느 단계에서도 막지 않는다 (철수 후에도 잔무 처리 계정이 필요하다).
+  - 비활성(계약종료 포함) 브랜드는 쓰기 409 (BrandWriteGuard): 제품·판매상품 등록·수정·활성화·구성 변경·리뉴얼,
+    채널 매핑 등록·재지정·삭제, 사은품 이벤트 등록·수정·삭제·재시작, 엑셀 시딩, 소속 사용자 등록·이동.
+    조회와 기존 주문 처리(취소·분리·출고지시·수동 증정)는 허용 — 철수 후 잔무 처리 경로. 정리 행위(제품·판매상품 비활성화,
+    이벤트 중단)도 허용. 브랜드 재활성화는 소속 회사가 활성이어야 한다.
+- 사용자 관리 (/api/users — 조회는 ADMIN·COMPANY_STAFF(자사만), 등록·변경은 ADMIN):
+  - 등록은 role별 정적 팩토리 경유 (소속 조합이 시그니처로 강제 + DB CHECK). 관리자군 login_id = 이메일, WORKER는 작업자코드.
+    비밀번호는 BCrypt로만 저장 (PasswordEncoder는 infra 공유 빈 — auth 로그인 검증과 같은 것).
+  - 수정: 이름·이메일·소속(COMPANY_STAFF 회사 / BRAND_STAFF 브랜드, 회사는 브랜드에서). 관리자군 이메일 변경은 login_id도
+    바꾸고 응답에 "로그인 아이디가 변경되었습니다"를 싣는다. login_id가 바뀌어도 기발급 JWT는 만료까지 유효하다 — claims가
+    userId 기준이라 동작에 문제가 없고, 의도된 동작이다 (User.changeEmail javadoc). role 변경은 미지원 — 재등록 (§8).
+  - 탈퇴(즉시, 되돌릴 수 없음): login_id → WD{id}-{yyyyMMddHHmmss}(원래 값 반납 — 같은 아이디로 재가입 가능),
+    email → 관리자군 withdrawn-{id}@masked.invalid(DB CHECK로 NULL 불가) / WORKER NULL, 이름 → 탈퇴회원,
+    비밀번호 → 매칭 불가 값('!', SYSTEM 계정과 같은 방식), OTP 삭제. 탈퇴 사용자는 활성화·변경·비밀번호 재설정 409.
+  - 비밀번호 재설정: 임시 비밀번호(오독 문자 뺀 12자)를 응답으로 한 번만 내리고 해시만 저장한다.
+  - 자기 자신은 비활성화·탈퇴할 수 없다. 비활성·탈퇴 사용자의 기발급 JWT는 만료까지 유효하다 (토큰 폐기 저장소 없음,
+    재로그인만 막는다).
 - 실패 응답은 원인 무구분 동일 메시지(계정 존재 비노출). WORKER 차단만 정책 메시지.
 
 ### §4. 상품 / 재고
@@ -481,10 +504,22 @@ FK 인덱스를 늘리지 않고 대체한다. 모두 `ALGORITHM=INPLACE, LOCK=N
 - products = 재고 관리 단위(SKU, UNIQUE). sale_products = 판매 단위.
   모든 판매는 sale_products 경유 (products 직접 판매 없음).
   단품도 구성 1행짜리 판매상품.
-- sale_products.code는 내부 식별자, 생성 후 불변.
-- 구성(sale_product_items)은 주문 이력 발생 후 변경 금지 (서비스 검증 필수).
+- sale_products.code는 내부 식별자, 생성 후 불변. 브랜드 안에서 유니크 (V10 uk(brand_id, code) — 이벤트 조건이 코드로 매칭하고
+  판정이 브랜드 안에서 돌므로 브랜드 단위면 충분하다. 다른 브랜드와는 겹쳐도 된다).
+- 구성(sale_product_items)은 주문 이력 발생 후 변경 금지 (SaleProductService: 취소 항목 포함 주문 이력이 있으면 409 +
+  "새 판매상품으로 등록 후 매핑을 이전하세요"). 구성 제품은 판매상품과 같은 브랜드의 ACTIVE 제품, 사은품 아닌 구성품 1개 이상.
   구성 리뉴얼 = 새 판매상품 등록(새 code) + 채널 매핑 재지정 + 구 상품 INACTIVE.
-  이 절차를 한 번의 운영 액션으로 묶는 "리뉴얼 액션" 제공.
+  이 절차를 한 번의 운영 액션으로 묶는 "리뉴얼 액션" (POST /api/sale-products/{id}/renew, 한 트랜잭션):
+  현재 유효 매핑을 잠그고 전부 renew(처리 시각 마감 + 같은 시각부터 새 판매상품 행) → 구 상품 INACTIVE.
+  실패하면 아무것도 바뀌지 않는다. 구 코드를 조건으로 쓰는 진행 중 사은품 이벤트는 리뉴얼 후 주문에 걸리지 않으므로 응답에 경고한다.
+- 통관 사전 경고: 판매상품 등록·구성 변경·리뉴얼 응답에, 판매상품 1개의 분류별 환산 수량(Σ 구성 수량 × customs_unit_qty)이
+  분류 한도를 넘으면 경고한다 — 분리는 주문 항목 1개를 쪼개지 않으므로 이 상품이 든 주문은 분리가 실패한다 (분할 불가 상품 사전 고지).
+- 제품 관리 (/api/products — ADMIN·COMPANY_STAFF 자사 브랜드, BRAND_STAFF는 자기 브랜드 조회만 — 판매상품 구성용): sku 전역 유니크·불변, 수정은 엔티티 변경 단위
+  (기본정보·통관정보(customs_unit_qty 포함)·치수). 비활성화는 이 제품을 구성에 포함한 ACTIVE 판매상품이 있으면 409 + 목록.
+  재고(physical·allocated)는 원장·할당 경로로만 바뀐다.
+- 판매상품 관리 (/api/sale-products — ADMIN·COMPANY_STAFF·BRAND_STAFF 자기 브랜드): 등록(구성 포함 원자), 이름 수정, 구성 변경,
+  리뉴얼, 비활성화·활성화. 비활성화는 현재 채널 매핑이 남아 있어도 허용하되 응답에 경고한다 — 매핑은 판매상품 상태를 보지
+  않으므로 이 상품으로 주문이 계속 매칭된다 (매핑을 다른 상품으로 바꾸거나 삭제하도록 안내).
 - 주문의 제품 전개는 소비 시점(할당·피킹)에 수행 (지연 전개).
   구성 불변이 지연 전개의 안전 전제다.
 - 채널 매핑(sale_product_channel_mappings)은 시간 이력:
@@ -693,6 +728,8 @@ FK 인덱스를 늘리지 않고 대체한다. 모두 `ALGORITHM=INPLACE, LOCK=N
 ### §8. 미결 / 확장 메모 (임의 구현 금지)
 
 - 기기 신뢰 인증·TOTP (2차, docs/device-registration.md)
+- 사용자 role 전환: 소속 조합 재검증이 얽혀 범위 외 — 지금은 재등록. JWT 즉시 폐기(비활성·탈퇴·login_id 변경 시)도 범위 외
+- 채널 마스터(sales_channels)·통관 분류(customs_categories) CRUD: V5 시딩으로 충분, 필요하면 마이그레이션으로 추가
 - 사은품 이벤트 재평가 API (증정 실패 주문·한도 증설 후 재평가): 지금은 시딩 결과의 실패 안내만. 증정 실패가 실제로 관측되면 승격
 - 이벤트 간 우선순위·배타, 구간별 선착순, 증정 후 이벤트 취소에 따른 회수 (범위 외 확정)
 - 수집 API (매핑안됨 보관 구조는 §5로 확정, 시딩과 공유)

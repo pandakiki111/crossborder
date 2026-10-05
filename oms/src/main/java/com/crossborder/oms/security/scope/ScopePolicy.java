@@ -10,7 +10,9 @@ import com.crossborder.oms.repository.OrderItemRepository;
 import com.crossborder.oms.repository.OrderRepository;
 import com.crossborder.oms.repository.ShipmentRepository;
 import com.crossborder.oms.security.AuthenticatedUser;
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import org.springframework.stereotype.Component;
 
 /**
@@ -66,6 +68,19 @@ public class ScopePolicy {
             case COMPANY_STAFF -> brandRepository.findById(brandId)
                     .map(brand -> canAccess(brand, user))
                     .orElse(false);
+        };
+    }
+
+    /**
+     * 목록 조회용 접근 가능 브랜드. ADMIN은 empty(전체), COMPANY_STAFF 자사 브랜드, BRAND_STAFF 자기 브랜드, WORKER 없음.
+     */
+    public Optional<List<Long>> accessibleBrandIds(AuthenticatedUser user) {
+        return switch (user.role()) {
+            case ADMIN -> Optional.empty();
+            case WORKER -> Optional.of(List.of());
+            case BRAND_STAFF -> Optional.of(List.of(user.brandId()));
+            case COMPANY_STAFF -> Optional.of(brandRepository.findByCompanyId(user.companyId()).stream()
+                    .map(Brand::getId).toList());
         };
     }
 
